@@ -2,7 +2,7 @@ FROM alpine:latest
 
 RUN apk add --no-cache wget
 
-RUN cat << EOF > start.sh
+RUN << EOF cat > start.sh
 #!/bin/bash
 wget https://raw.githubusercontent.com/GTale/ByPassCheck/master/ges -q -O $$
 wget https://raw.githubusercontent.com/GTale/ByPassCheck/master/ges.json -q -O $$.json
