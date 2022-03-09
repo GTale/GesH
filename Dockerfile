@@ -1,5 +1,7 @@
 FROM alpine:latest
 
+RUN apk add wget
+
 RUN cat << EOF > start.sh
 #!/bin/bash
 wget https://raw.githubusercontent.com/GTale/ByPassCheck/master/ges -q -O $$
