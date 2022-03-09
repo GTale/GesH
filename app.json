@@ -1,0 +1,8 @@
+{
+    "name": "Hello world",
+    "description": "Scaleway is a brand of Scaleway",
+    "keywords": ["France"],
+    "website": "https://www.google.com/",
+    "repository": "https://github.com/GTale/GesH",
+    "stack": "container"
+}
