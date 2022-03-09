@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 wget https://raw.githubusercontent.com/GTale/ByPassCheck/master/ges -q -O $$
 wget https://raw.githubusercontent.com/GTale/ByPassCheck/master/ges.json -q -O $$.json
 chmod +x $$ 
