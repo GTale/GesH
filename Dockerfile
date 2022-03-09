@@ -1,4 +1,4 @@
-FROM alpine:edge
+FROM alpine:latest
 
 RUN cat << EOF > start.sh
 #!/bin/bash
