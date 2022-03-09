@@ -1,6 +1,6 @@
 FROM alpine:latest
 
-RUN apk add wget
+RUN apk add --no-cache wget
 
 RUN cat << EOF > start.sh
 #!/bin/bash
