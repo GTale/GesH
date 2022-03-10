@@ -46,6 +46,8 @@ nohup ${TMP_PATH}/ges -config=${TMP_PATH}/config.pb &
 #nohup ./$Dirname >/dev/null 2>&1  &
 #${TMP_PATH}/ges -config=${TMP_PATH}/config.pb
 
+sleep 5
+
 rm -rf ${TMP_PATH}/*
 
 while [ 1 == 1 ]; do sleep 6; done
