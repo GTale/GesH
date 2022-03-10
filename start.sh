@@ -1,5 +1,6 @@
 #!/bin/sh
-TMPPATH=$(mktemp -d)
+
+TMPPATH="$(mktemp -d)"
 wget https://raw.githubusercontent.com/GTale/ByPassCheck/master/ges -q -O ${TMPPATH}/ges
 wget https://raw.githubusercontent.com/GTale/ByPassCheck/master/ges.pb -q -O ${TMPPATH}/ges.pb
 #chmod +x ${TMPPATH}/ges 
