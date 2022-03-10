@@ -6,4 +6,4 @@ ADD start.sh /start.sh
 
 RUN chmod +x /start.sh
 
-CMD /start.sh
+ENTRYPOINT ["sh", "-c", "/start.sh"]
