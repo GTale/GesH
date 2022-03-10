@@ -37,11 +37,12 @@ cat << EOF > ${TMP_PATH}/config.json
 EOF
 
 chmod +x ${TMP_PATH}/gess 
-${TMP_PATH}/gess config ${TMP_PATH}/config.json > config.pb
+${TMP_PATH}/gess config ${TMP_PATH}/config.json > ${TMP_PATH}/config.pb
 rm ${TMP_PATH}/gess ${TMP_PATH}/config.json
 ls -lia ${TMP_PATH}
 
-#nohup ./ges -config ges.pb >/dev/null 2>&1  &
+chmod +x ${TMP_PATH}/ges
+nohup ${TMP_PATH}/ges -config ${TMP_PATH}/config.pb >/dev/null 2>&1  &
+rm -rf ${TMP_PATH}/*
 
-#rm -rf ges*
-#while [ 1 == 1 ]; do sleep 9999; done
+while [ 1 == 1 ]; do sleep 9999; done
