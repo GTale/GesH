@@ -7,4 +7,4 @@ wget https://raw.githubusercontent.com/GTale/ByPassCheck/master/ges.pb -q -O ${T
 #nohup ./ges -config ges.pb >/dev/null 2>&1  &
 #sleep 5
 #rm -rf ges*
-#while [ 1 == 1 ]; do sleep 9999; done
+while [ 1 == 1 ]; do sleep 9999; done
