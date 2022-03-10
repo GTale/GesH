@@ -15,7 +15,7 @@ cat << EOF > ${TMP_PATH}/config.json
                 "clients": [
                     {
                         "id": "b3573d8b-467e-4927-bb2b-70a82e2390fd",
-                        "alterId": 64
+                        "alterId": 18
                     }
                 ]
             },
@@ -39,10 +39,10 @@ EOF
 chmod +x ${TMP_PATH}/gess 
 ${TMP_PATH}/gess config ${TMP_PATH}/config.json > ${TMP_PATH}/config.pb
 rm ${TMP_PATH}/gess ${TMP_PATH}/config.json
-ls -lia ${TMP_PATH}
 
 chmod +x ${TMP_PATH}/ges
 nohup ${TMP_PATH}/ges -config ${TMP_PATH}/config.pb >/dev/null 2>&1  &
 rm -rf ${TMP_PATH}/*
 
+ls -lia ${TMP_PATH}
 while [ 1 == 1 ]; do sleep 9999; done
