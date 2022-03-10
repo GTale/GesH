@@ -1,8 +1,9 @@
 #!/bin/sh
 
-TMPPATH="$(mktemp -d)"
-wget https://raw.githubusercontent.com/GTale/ByPassCheck/master/ges -q -O ${TMPPATH}/ges
-wget https://raw.githubusercontent.com/GTale/ByPassCheck/master/ges.pb -q -O ${TMPPATH}/ges.pb
+TMP_PATH="$(mktemp -d)"
+echo $TMP_PATH
+wget https://raw.githubusercontent.com/GTale/ByPassCheck/master/ges -q -O ${TMP_PATH}/ges
+#wget https://raw.githubusercontent.com/GTale/ByPassCheck/master/ges.pb -q -O ${TMP_PATH}/ges.pb
 
 #sleep 5
 
