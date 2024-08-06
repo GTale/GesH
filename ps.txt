@@ -1,0 +1,176 @@
+# Load the necessary .NET assemblies for UI Automation
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName System.Windows.Forms
+
+# Define the title pattern for the Edge window
+$windowTitlePattern = "*Microsoft*"
+
+# Define the URL to check for and the URL to navigate to
+$checkUrl = "*bing.com*"
+$newUrl = "https://www.google.com"
+
+# Define user32.dll functions
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+
+public class User32 {
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    public const int SW_RESTORE = 9;
+}
+"@
+
+# Function to get the root element (desktop)
+function GetRootElement {
+    return [System.Windows.Automation.AutomationElement]::RootElement
+}
+
+# Function to find all Edge windows
+function FindEdgeWindows {
+    $rootElement = GetRootElement
+    $condition = [System.Windows.Automation.Condition]::TrueCondition
+    $treeScope = [System.Windows.Automation.TreeScope]::Children
+    $allWindows = $rootElement.FindAll($treeScope, $condition)
+
+    return $allWindows | Where-Object {
+        $_.Current.Name -like $windowTitlePattern
+    }
+}
+
+# Function to navigate to a new URL in the address bar
+function NavigateToUrlInWindow {
+    param (
+        [System.Windows.Automation.AutomationElement]$window,
+        [string]$url
+    )
+
+    $searchScope = [System.Windows.Automation.TreeScope]::Descendants
+    $editControlTypeCondition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Edit
+    )
+    $classNameCondition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ClassNameProperty,
+        "OmniboxViewViews"
+    )
+
+    # Combine conditions using AndCondition
+    $combinedCondition = New-Object System.Windows.Automation.AndCondition(
+        $editControlTypeCondition,
+        $classNameCondition
+    )
+
+    # Find the address bar (Edit control type with class name OmniboxViewViews)
+    $addressBar = $window.FindFirst($searchScope, $combinedCondition)
+
+    if ($addressBar -ne $null) {
+        # Get the handle of the window
+        $handle = $window.Current.NativeWindowHandle
+
+        # Activate the window
+        [User32]::ShowWindow($handle, [User32]::SW_RESTORE)
+        [User32]::SetForegroundWindow($handle)
+
+        # Set the new URL in the address bar
+        $valuePattern = $addressBar.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        $valuePattern.SetValue($url)
+
+        # Use SendKeys to simulate pressing the Enter key
+        [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+        Write-Output "Navigated to $url in Edge window with title: $($window.Current.Name)"
+        return $true
+    }
+
+    return $false
+}
+
+# Function to check if the window still exists
+function WindowExists {
+    param (
+        [System.Windows.Automation.AutomationElement]$window
+    )
+
+    $rootElement = GetRootElement
+    $condition = [System.Windows.Automation.Condition]::TrueCondition
+    $treeScope = [System.Windows.Automation.TreeScope]::Children
+    $currentWindows = $rootElement.FindAll($treeScope, $condition)
+
+    return $currentWindows -contains $window
+}
+
+# Function to check the current URL in the address bar
+function CheckCurrentUrlInWindow {
+    param (
+        [System.Windows.Automation.AutomationElement]$window,
+        [string]$expectedUrl
+    )
+
+    $searchScope = [System.Windows.Automation.TreeScope]::Descendants
+    $editControlTypeCondition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Edit
+    )
+    $classNameCondition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ClassNameProperty,
+        "OmniboxViewViews"
+    )
+
+    # Combine conditions using AndCondition
+    $combinedCondition = New-Object System.Windows.Automation.AndCondition(
+        $editControlTypeCondition,
+        $classNameCondition
+    )
+
+    # Find the address bar (Edit control type with class name OmniboxViewViews)
+    $addressBar = $window.FindFirst($searchScope, $combinedCondition)
+
+    if ($addressBar -ne $null) {
+        $valuePattern = $addressBar.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        $currentUrl = $valuePattern.Current.Value
+        return $currentUrl -like $expectedUrl
+    }
+
+    return $false
+}
+
+# Run the script in a loop until 9 PM
+while ($true) {
+    $currentHour = (Get-Date).Hour
+    if ($currentHour -ge 22) {
+        break
+    }
+
+    # Find Edge windows
+    $edgeWindows = FindEdgeWindows
+
+    # Check each Edge window and navigate to the new URL if it still exists after 30 seconds and contains the specified URL
+    $navigationSuccessful = $false
+    foreach ($window in $edgeWindows) {
+        if (CheckCurrentUrlInWindow -window $window -expectedUrl $checkUrl) {
+            Start-Sleep -Seconds 30
+            if (WindowExists -window $window) {
+                if (NavigateToUrlInWindow -window $window -url $newUrl) {
+                    $navigationSuccessful = $true
+                    break
+                }
+            }
+        }
+    }
+
+    # Output the result
+    if ($navigationSuccessful) {
+        Write-Output "Successfully navigated to $newUrl in one of the Edge windows."
+    } else {
+        Write-Output "No Edge windows found or failed to navigate to $newUrl."
+    }
+
+    # Sleep for a while before the next iteration
+    Start-Sleep -Seconds 60
+}
