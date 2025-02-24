@@ -1,0 +1,291 @@
+'=============== 模块顶部声明 ===============
+Option Explicit
+' 引用需启用：Microsoft Scripting Runtime
+
+' 定义员工数据结构
+Type Employee
+    Name As String
+    offDays As Collection
+    OfficeDaysNeeded As Integer
+    schedule As Dictionary
+End Type
+
+' 全局常量
+Const MaxSeats As Integer = 18
+Const TotalEmployees As Integer = 35
+Const StartDate As Date = #3/1/2025#
+
+' 全局变量
+Dim Employees(1 To TotalEmployees) As Employee
+Dim WeekCapacity(1 To 5) As Integer
+
+'=============== 主入口 ===============
+Sub Main()
+    On Error GoTo ErrorHandler
+    Application.ScreenUpdating = False
+    
+    ' 初始化数据
+    InitializeMarch2025
+    
+    ' 生成排班
+    GenerateSchedule
+    
+    ' 输出结果
+    PrintSchedule
+    TestDataReport
+    
+    Application.ScreenUpdating = True
+    MsgBox "排班完成！结果已输出到工作表", vbInformation
+    Exit Sub
+
+ErrorHandler:
+    Application.ScreenUpdating = True
+    MsgBox "错误：" & Err.Description, vbCritical
+End Sub
+
+'=============== 数据初始化 ===============
+Sub InitializeMarch2025()
+    Dim i As Integer
+    Dim holidays As Collection
+    Set holidays = GetHolidays()
+    
+    For i = 1 To TotalEmployees
+        With Employees(i)
+            .Name = "员工" & Format(i, "00")
+            Set .offDays = GenerateOffDays(i, holidays)
+            .OfficeDaysNeeded = CalcOfficeDaysNeeded(.offDays, holidays)
+            Set .schedule = New Dictionary
+        End With
+    Next
+End Sub
+
+'=============== 排班核心算法 ===============
+Sub GenerateSchedule()
+    Dim i As Integer, week As Integer
+    
+    ' 第一阶段：处理强制安排
+    For i = 1 To TotalEmployees
+        Dim d As Variant
+        For Each d In Employees(i).offDays
+            Dim offWeek As Integer
+            offWeek = GetWeekNumber(CDate(d))
+            
+            If offWeek + 1 <= 5 Then
+                If WeekCapacity(offWeek + 1) < MaxSeats Then
+                    If Not Employees(i).schedule.Exists(offWeek + 1) Then
+                        Employees(i).schedule(offWeek + 1) = 5
+                        WeekCapacity(offWeek + 1) = WeekCapacity(offWeek + 1) + 1
+                        Employees(i).OfficeDaysNeeded = Employees(i).OfficeDaysNeeded - 5
+                    End If
+                End If
+            End If
+        Next
+    Next
+    
+    ' 第二阶段：填充剩余需求
+    For week = 1 To 5
+        For i = 1 To TotalEmployees
+            If WeekCapacity(week) >= MaxSeats Then Exit For
+            If Employees(i).OfficeDaysNeeded <= 0 Then GoTo NextEmployee
+            
+            If Not Employees(i).schedule.Exists(week) Then
+                If Not HasConflict(Employees(i), week) Then
+                    Employees(i).schedule(week) = 5
+                    WeekCapacity(week) = WeekCapacity(week) + 1
+                    Employees(i).OfficeDaysNeeded = Employees(i).OfficeDaysNeeded - 5
+                End If
+            End If
+            
+NextEmployee:
+        Next i
+    Next week
+End Sub
+
+'=============== 辅助函数 ===============
+Function GetHolidays() As Collection
+    Set GetHolidays = New Collection
+    ' 添加法定节假日（示例）
+    ' GetHolidays.Add #3/8/2025# ' 妇女节
+End Function
+
+Function GenerateOffDays(ByVal id As Integer, ByRef holidays As Collection) As Collection
+    Set GenerateOffDays = New Collection
+    Randomize id
+    
+    Dim workDays As Collection
+    Set workDays = GetWorkDays()
+    
+    Dim offCount As Integer: offCount = 2 + (id Mod 2)
+    Dim attempts As Integer: attempts = 0
+    
+    Do While GenerateOffDays.count < offCount And attempts < 100
+        attempts = attempts + 1
+        Dim randomDay As Integer: randomDay = Int(Rnd() * workDays.count) + 1
+        Dim selectedDate As Date: selectedDate = workDays(randomDay)
+        
+        If Not ContainsDate(GenerateOffDays, selectedDate) And _
+           Not ContainsDate(holidays, selectedDate) Then
+            GenerateOffDays.Add selectedDate
+        End If
+    Loop
+End Function
+
+Function CalcOfficeDaysNeeded(ByRef offDays As Collection, ByRef holidays As Collection) As Integer
+    Dim totalWorkDays As Integer: totalWorkDays = GetWorkDays().count - holidays.count
+    CalcOfficeDaysNeeded = (totalWorkDays - offDays.count) \ 2
+End Function
+
+Function GetWorkDays() As Collection
+    Set GetWorkDays = New Collection
+    Dim d As Date
+    For d = StartDate To DateAdd("d", 30, StartDate)
+        If Weekday(d, vbMonday) <= 5 Then
+            GetWorkDays.Add d
+        End If
+    Next
+End Function
+
+Function GetWeekNumber(ByVal d As Date) As Integer
+    GetWeekNumber = WorksheetFunction.weekNum(d, vbMonday) - WorksheetFunction.weekNum(StartDate, vbMonday) + 1
+End Function
+
+Function ContainsDate(ByRef col As Collection, ByVal target As Date) As Boolean
+    Dim d As Variant
+    For Each d In col
+        If CDate(d) = target Then
+            ContainsDate = True
+            Exit Function
+        End If
+    Next
+End Function
+
+Function HasConflict(ByRef emp As Employee, ByVal week As Integer) As Boolean
+    Dim d As Variant
+    For Each d In emp.offDays
+        If GetWeekNumber(CDate(d)) = week Then
+            HasConflict = True
+            Exit Function
+        End If
+    Next
+    HasConflict = False
+End Function
+
+'=============== 结果输出 ===============
+Sub PrintSchedule()
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.count))
+    ws.Name = "排班表"
+    
+    ' 创建表头
+    ws.Range("A1").Value = "员工"
+    Dim week As Integer
+    For week = 1 To 5
+        ws.Cells(1, week + 1).Value = "第" & week & "周"
+    Next
+    
+    ' 填充数据
+    Dim i As Integer
+    For i = 1 To TotalEmployees
+        With ws.Cells(i + 1, 1)
+            .Value = Employees(i).Name
+            .HorizontalAlignment = xlCenter
+        End With
+        
+        For week = 1 To 5
+            Dim status As String
+            If Employees(i).schedule.Exists(week) Then
+                status = "WIO"
+            ElseIf HasConflict(Employees(i), week) Then
+                status = "AL"
+            Else
+                status = "WFH"
+            End If
+            ws.Cells(i + 1, week + 1).Value = status
+        Next
+    Next
+    
+    ' 格式化
+    ws.Columns.AutoFit
+    With ws.Range("A1:F1")
+        .Font.Bold = True
+        .Interior.Color = RGB(200, 200, 200)
+    End With
+End Sub
+
+'=============== 测试报告 ===============
+Sub TestDataReport()
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Sheets.Add(After:=ThisWorkbook.Sheets("排班表"))
+    ws.Name = "测试数据"
+    
+    ' 创建表头
+    ws.Range("A1:D1") = Array("员工", "休假日期", "需到岗天数", "排班周次")
+    
+    ' 填充数据
+    Dim i As Integer
+    For i = 1 To TotalEmployees
+        With Employees(i)
+            ws.Cells(i + 1, 1).Value = .Name
+            ws.Cells(i + 1, 2).Value = JoinDates(.offDays)
+            ws.Cells(i + 1, 3).Value = .OfficeDaysNeeded
+            ws.Cells(i + 1, 4).Value = GetScheduledWeeks(.schedule)
+        End With
+    Next
+    
+    ' 格式化
+    ws.Columns.AutoFit
+    With ws.Range("A1:D1")
+        .Font.Bold = True
+        .Interior.Color = RGB(200, 200, 200)
+    End With
+End Sub
+
+Function JoinDates(ByRef dates As Collection) As String
+    Dim result As String
+    Dim d As Variant
+    For Each d In dates
+        result = result & Format(d, "mm/dd") & ", "
+    Next
+    If Len(result) > 0 Then result = Left(result, Len(result) - 2)
+    JoinDates = result
+End Function
+
+Function GetScheduledWeeks(ByRef schedule As Dictionary) As String
+    Dim result As String
+    Dim week As Variant
+    For Each week In schedule.Keys
+        result = result & week & ", "
+    Next
+    If Len(result) > 0 Then result = Left(result, Len(result) - 2)
+    GetScheduledWeeks = result
+End Function
+
+'=============== 验证模块 ===============
+Sub ValidateSchedule()
+    Dim errorMsg As String
+    Dim i As Integer, week As Integer
+    
+    ' 验证座位数
+    For week = 1 To 5
+        If WeekCapacity(week) > MaxSeats Then
+            errorMsg = errorMsg & "第" & week & "周超额安排：" & WeekCapacity(week) & vbCrLf
+        End If
+    Next
+    
+    ' 验证休假冲突
+    For i = 1 To TotalEmployees
+        For Each d In Employees(i).offDays
+            week = GetWeekNumber(CDate(d))
+            If Employees(i).schedule.Exists(week) Then
+                errorMsg = errorMsg & Employees(i).Name & " 在休假周" & week & "被安排到岗" & vbCrLf
+            End If
+        Next
+    Next
+    
+    If Len(errorMsg) > 0 Then
+        MsgBox "发现以下问题：" & vbCrLf & errorMsg, vbExclamation
+    Else
+        MsgBox "排班验证通过！", vbInformation
+    End If
+End Sub
+
