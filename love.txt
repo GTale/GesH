@@ -1,0 +1,54 @@
+' API声明（支持64位Office）
+#If VBA7 Then
+    Declare PtrSafe Function SetCursorPos Lib "user32" (ByVal x As Long, ByVal y As Long) As Long
+    Declare PtrSafe Function GetSystemMetrics Lib "user32" (ByVal nIndex As Long) As Long
+    Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal ms As Long)
+    Declare PtrSafe Function GetAsyncKeyState Lib "user32" (ByVal vKey As Long) As Integer
+#Else
+    ' 32位Office声明（略）
+#End If
+
+Sub DrawHeartWithMouse()
+    ' 参数配置
+    Const STEP_ANGLE As Double = 0.05   ' 角度步长（控制绘制精度）
+    Const DELAY_MS As Long = 20         ' 移动间隔（毫秒）
+    Const SCALE_FACTOR As Long = 15     ' 缩放系数
+    
+    Dim screenWidth As Long, screenHeight As Long
+    screenWidth = GetSystemMetrics(0)
+    screenHeight = GetSystemMetrics(1)
+    
+    ' 计算屏幕中心坐标
+    Dim centerX As Long, centerY As Long
+    centerX = screenWidth \ 2
+    centerY = screenHeight \ 2 + 100    ' 下移100像素使爱心居中
+    
+    Dim t As Double
+    t = 0
+    
+    Do While t < 2 * 3.1415926535
+        ' 计算爱心原始坐标
+        Dim x As Double, y As Double
+        x = 16 * (Sin(t)) ^ 3
+        y = 13 * Cos(t) - 5 * Cos(2 * t) - 2 * Cos(3 * t) - Cos(4 * t)
+        
+        ' 坐标变换：缩放 + 平移
+        Dim screenX As Long, screenY As Long
+        screenX = centerX + x * SCALE_FACTOR
+        screenY = centerY - y * SCALE_FACTOR  ' 减号因屏幕Y轴向下
+        
+        ' 边界检查
+        screenX = Application.WorksheetFunction.Max(0, _
+                   Application.WorksheetFunction.Min(screenX, screenWidth - 1))
+        screenY = Application.WorksheetFunction.Max(0, _
+                   Application.WorksheetFunction.Min(screenY, screenHeight - 1))
+        
+        ' 移动鼠标
+        SetCursorPos screenX, screenY
+        Sleep DELAY_MS
+        
+        ' 按ESC退出
+        If GetAsyncKeyState(vbKeyEscape) Then Exit Do
+        t = t + STEP_ANGLE
+    Loop
+End Sub
