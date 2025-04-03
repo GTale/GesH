@@ -1,39 +1,77 @@
-' 需在VBA模块中声明API函数
+' 在模块顶部添加这些API声明
 #If VBA7 Then
+    ' 窗口管理API
     Declare PtrSafe Function CreateWindowEx Lib "user32" Alias "CreateWindowExA" _
         (ByVal dwExStyle As Long, ByVal lpClassName As String, _
         ByVal lpWindowName As String, ByVal dwStyle As Long, _
         ByVal x As Long, ByVal y As Long, ByVal nWidth As Long, _
-        ByVal nHeight As Long, ByVal hWndParent As Long, _
-        ByVal hMenu As Long, ByVal hInstance As Long, _
-        ByVal lpParam As Long) As Long
+        ByVal nHeight As Long, ByVal hWndParent As LongPtr, _
+        ByVal hMenu As LongPtr, ByVal hInstance As LongPtr, _
+        ByVal lpParam As LongPtr) As LongPtr
+    Declare PtrSafe Function ShowWindow Lib "user32" _
+        (ByVal hWnd As LongPtr, ByVal nCmdShow As Long) As Long
+    Declare PtrSafe Function UpdateWindow Lib "user32" _
+        (ByVal hWnd As LongPtr) As Long
     
-    Declare PtrSafe Function GetDC Lib "user32" (ByVal hWnd As Long) As Long
-    Declare PtrSafe Function Polygon Lib "gdi32" (ByVal hdc As Long, _
-        lpPoint As POINTAPI, ByVal nCount As Long) As Long
+    ' GDI绘图API
+    Declare PtrSafe Function GetDC Lib "user32" _
+        (ByVal hWnd As LongPtr) As LongPtr
+    Declare PtrSafe Function ReleaseDC Lib "user32" _
+        (ByVal hWnd As LongPtr, ByVal hDC As LongPtr) As Long
+    Declare PtrSafe Function Polygon Lib "gdi32" _
+        (ByVal hdc As LongPtr, lpPoint As Any, ByVal nCount As Long) As Long
+    Declare PtrSafe Function CreatePen Lib "gdi32" _
+        (ByVal nPenStyle As Long, ByVal nWidth As Long, ByVal crColor As Long) As LongPtr
+    Declare PtrSafe Function SelectObject Lib "gdi32" _
+        (ByVal hdc As LongPtr, ByVal hObject As LongPtr) As LongPtr
+    
+    ' 类型定义
     Type POINTAPI
         x As Long
         y As Long
     End Type
 #End If
 
-Sub DrawHeart()
-    Dim hWnd As Long, hdc As Long
-    Dim points(29) As POINTAPI  ' 30个点定义心形
+Sub DrawVisibleHeart()
+    ' 窗口参数
+    Const WS_POPUP As Long = &H80000000
+    Const WS_VISIBLE As Long = &H10000000
+    Const CW_USEDEFAULT As Long = &H80000000
     
     ' 创建透明窗口
-    hWnd = CreateWindowEx(&H80088, "STATIC", "Heart", &H80000000, _
-        0, 0, 400, 400, 0, 0, 0, 0)
-    hdc = GetDC(hWnd)
+    Dim hWnd As LongPtr
+    hWnd = CreateWindowEx( _
+        &H80088, _          ' 扩展样式: WS_EX_LAYERED+WS_EX_TOPMOST
+        "Static", _         ' 预定义控件类
+        "VBA Heart", _      ' 窗口标题
+        WS_POPUP Or WS_VISIBLE, _  ' 样式
+        100, 100, 400, 400, _      ' 位置和大小
+        0, 0, 0, 0)
     
-    ' 心形坐标点（需数学计算生成）
+    ' 初始化GDI资源
+    Dim hdc As LongPtr
+    Dim hPen As LongPtr
+    hdc = GetDC(hWnd)
+    hPen = CreatePen(0, 3, &HFF)  ' 创建红色画笔
+    
+    ' 计算心形坐标
+    Dim points(0 To 29) As POINTAPI
     For i = 0 To 29
-        angle = 2 * 3.1415926 * i / 30
-        points(i).x = 200 + 50 * (16 * Sin(angle) ^ 3)
-        points(i).y = 200 - 50 * (13 * Cos(angle) - 5 * Cos(2 * angle) - _
-                       2 * Cos(3 * angle) - Cos(4 * angle))
+        Dim t As Double
+        t = 2 * 3.1415926535 * i / 30
+        points(i).x = 200 + 50 * (16 * Sin(t) ^ 3)
+        points(i).y = 200 - 50 * (13 * Cos(t) - 5 * Cos(2 * t) - _
+                       2 * Cos(3 * t) - Cos(4 * t))
     Next
     
-    ' 绘制多边形
+    ' 绘制图形
+    Call SelectObject(hdc, hPen)
     Polygon hdc, points(0), 30
+    
+    ' 保持窗口显示
+    DoEvents
+    Application.Wait Now + TimeValue("00:00:05")  ' 显示5秒
+    
+    ' 清理资源
+    ReleaseDC hWnd, hdc
 End Sub
