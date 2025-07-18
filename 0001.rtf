@@ -1,35 +1,29 @@
 ' VBA 模块代码
 Option Explicit
 
-' API 声明
-#If VBA7 Then
-    Private Declare PtrSafe Function CreateMutex Lib "kernel32" Alias "CreateMutexA" (ByVal lpMutexAttributes As Long, ByVal bInitialOwner As Long, ByVal lpName As String) As LongPtr
-    Private Declare PtrSafe Function ReleaseMutex Lib "kernel32" (ByVal hMutex As LongPtr) As Long
-    Private Declare PtrSafe Function CloseHandle Lib "kernel32" (ByVal hObject As LongPtr) As Long
-    Private Declare PtrSafe Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As LongPtr, ByVal dwMilliseconds As Long) As Long
-    Private Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
-#Else
-    Private Declare Function CreateMutex Lib "kernel32" Alias "CreateMutexA" (ByVal lpMutexAttributes As Long, ByVal bInitialOwner As Long, ByVal lpName As String) As Long
-    Private Declare Function ReleaseMutex Lib "kernel32" (ByVal hMutex As Long) As Long
-    Private Declare Function CloseHandle Lib "kernel32" (ByVal hObject As Long) As Long
-    Private Declare Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As Long, ByVal dwMilliseconds As Long) As Long
-    Private Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)
-#End If
-
 ' 常量定义
-Const INFINITE As Long = &HFFFF
-Const WAIT_OBJECT_0 As Long = 0
-Const WAIT_TIMEOUT As Long = &H102
 Const TEMP_FOLDER As String = "C:\Temp\PComm\"
-Const MUTEX_NAME As String = "Global\PCommVBSMutex"
 Const POLL_INTERVAL As Long = 10  ' 10ms 轮询间隔
 Const MAX_WAIT_MS As Long = 10000 ' 10秒超时
-Const FILE_LOCK_TIMEOUT As Long = 5000 ' 5秒文件锁超时
+
+' 文件路径
+Const CMD_FILE As String = "PCommCmd.dat"
+Const STATUS_FILE As String = "PCommStatus.dat"
+Const RESULT_FILE As String = "PCommResult.dat"
+
+' 状态常量
+Const STATE_IDLE As String = "IDLE"
+Const STATE_PENDING As String = "PENDING"
+Const STATE_PROCESSING As String = "PROCESSING"
+Const STATE_COMPLETE As String = "COMPLETE"
 
 ' 初始化函数
 Sub InitializePComm()
     ' 确保临时目录存在
     If Dir(TEMP_FOLDER, vbDirectory) = "" Then MkDir TEMP_FOLDER
+    
+    ' 初始化状态文件
+    WriteFile TEMP_FOLDER & STATUS_FILE, STATE_IDLE
 End Sub
 
 ' 启动监听服务
@@ -53,142 +47,93 @@ Sub StartListener()
     Sleep 500
 End Sub
 
-' 获取文件锁
-Function AcquireFileLock(lockFilePath As String, Optional timeoutMs As Long = FILE_LOCK_TIMEOUT) As Boolean
-    Dim startTime As Double
-    startTime = Timer * 1000 ' 转换为毫秒
-    
-    ' 尝试获取文件锁
-    Do While True
-        On Error Resume Next
-        ' 尝试创建锁文件 - 如果成功则表示获取锁
-        Open lockFilePath For Output As #1
-        If Err.Number = 0 Then
-            Print #1, "Locked by VBA at " & Now
-            Close #1
-            AcquireFileLock = True
-            Exit Function
-        End If
-        
-        ' 检查超时
-        If (Timer * 1000 - startTime) > timeoutMs Then
-            Exit Function
-        End If
-        
-        ' 短时间等待后重试
-        Sleep 50
-        DoEvents
-    Loop
-End Function
-
-' 释放文件锁
-Sub ReleaseFileLock(lockFilePath As String)
-    On Error Resume Next
-    If Dir(lockFilePath) <> "" Then
-        Kill lockFilePath
-    End If
-End Sub
-
-' 发送命令核心函数 (使用文件锁)
+' 发送命令核心函数 (无锁版本)
 Function SendCommand(cmdType As String, Optional cmdValue As String = "") As String
-    Dim commandFile As String, resultFile As String, lockFile As String
-    commandFile = TEMP_FOLDER & "PCommCmd.dat"
-    resultFile = TEMP_FOLDER & "PCommRes.dat"
-    lockFile = TEMP_FOLDER & "PCommLock.lck"
+    Dim cmdFilePath As String, statusFilePath As String, resultFilePath As String
+    cmdFilePath = TEMP_FOLDER & CMD_FILE
+    statusFilePath = TEMP_FOLDER & STATUS_FILE
+    resultFilePath = TEMP_FOLDER & RESULT_FILE
     
-    ' 获取文件锁
-    If Not AcquireFileLock(lockFile) Then
-        SendCommand = "ERROR=获取文件锁超时"
+    ' 等待空闲状态
+    If Not WaitForState(STATE_IDLE) Then
+        SendCommand = "ERROR=等待空闲状态超时"
         Exit Function
     End If
     
-    On Error GoTo Cleanup
+    ' 写入命令文件
+    WriteFile cmdFilePath, cmdType & "=" & cmdValue
     
-    ' 删除旧结果文件
-    If Dir(resultFile) <> "" Then Kill resultFile
+    ' 设置状态为待处理
+    WriteFile statusFilePath, STATE_PENDING
     
-    ' 追加命令到文件
-    AppendToCommandFile commandFile, cmdType, cmdValue
+    ' 等待处理完成
+    If Not WaitForState(STATE_COMPLETE) Then
+        SendCommand = "ERROR=等待处理完成超时"
+        Exit Function
+    End If
     
-    ' 等待响应
-    Dim response As String, elapsed As Double, found As Boolean
+    ' 读取结果
+    SendCommand = ReadFile(resultFilePath)
+    
+    ' 重置状态
+    WriteFile statusFilePath, STATE_IDLE
+End Function
+
+' 等待特定状态
+Function WaitForState(targetState As String) As Boolean
     Dim startTime As Double
     startTime = Timer * 1000
-    found = False
     
     Do
-        If Dir(resultFile) <> "" Then
-            response = ReadBinaryFile(resultFile)
-            If InStr(1, response, cmdType & "=", vbBinaryCompare) > 0 Then
-                SendCommand = ExtractResult(response, cmdType)
-                found = True
-                Exit Do
-            End If
+        If ReadFile(TEMP_FOLDER & STATUS_FILE) = targetState Then
+            WaitForState = True
+            Exit Function
         End If
         
         ' 检查超时
-        elapsed = Timer * 1000 - startTime
-        If elapsed > MAX_WAIT_MS Then
-            SendCommand = "ERROR=等待响应超时 (" & Format(elapsed, "0") & "ms)"
-            Exit Do
+        If (Timer * 1000 - startTime) > MAX_WAIT_MS Then
+            Exit Function
         End If
         
         ' 短间隔等待
         Sleep POLL_INTERVAL
         DoEvents
     Loop
-    
-Cleanup:
-    ' 释放文件锁
-    ReleaseFileLock lockFile
 End Function
 
-' 追加命令到文件 (原子操作)
-Private Sub AppendToCommandFile(filePath As String, cmdType As String, cmdValue As String)
+' 文件操作函数
+Sub WriteFile(filePath As String, content As String)
     Dim fileNum As Integer
     fileNum = FreeFile
     
-    ' 打开文件追加写入
-    Open filePath For Append As #fileNum
-    Print #fileNum, cmdType & "=" & cmdValue & "|";
+    ' 原子写入：先写临时文件，然后重命名
+    Dim tempFilePath As String
+    tempFilePath = filePath & ".tmp"
+    
+    ' 写入临时文件
+    Open tempFilePath For Output As #fileNum
+    Print #fileNum, content
     Close #fileNum
+    
+    ' 重命名替换原文件
+    On Error Resume Next
+    If Dir(filePath) <> "" Then Kill filePath
+    Name tempFilePath As filePath
 End Sub
 
-' 读取二进制文件
-Private Function ReadBinaryFile(filePath As String) As String
+Function ReadFile(filePath As String) As String
     If Dir(filePath) = "" Then Exit Function
     
     Dim fileNum As Integer
     fileNum = FreeFile
     
-    Open filePath For Binary Access Read As #fileNum
-    ReadBinaryFile = Space(LOF(fileNum))
-    Get #fileNum, , ReadBinaryFile
+    Open filePath For Input As #fileNum
+    ReadFile = Input(LOF(fileNum), #fileNum)
     Close #fileNum
 End Function
 
-' 从响应中提取结果
-Private Function ExtractResult(fullResponse As String, cmdType As String) As String
-    Dim startPos As Long
-    startPos = InStr(1, fullResponse, cmdType & "=", vbBinaryCompare)
-    If startPos = 0 Then
-        ExtractResult = "ERROR=未找到响应类型"
-        Exit Function
-    End If
-    
-    Dim resultStart As Long
-    resultStart = startPos + Len(cmdType) + 1
-    
-    ' 查找结果结束位置
-    Dim endPos As Long
-    endPos = InStr(resultStart, fullResponse, "|", vbBinaryCompare)
-    If endPos = 0 Then endPos = Len(fullResponse) + 1
-    
-    ExtractResult = Mid(fullResponse, resultStart, endPos - resultStart)
-End Function
-
 ' ==============================
-' 封装的命令函数
+' 封装的命令函数 (保持不变)
 ' ==============================
 
 Function ConnectSession(sessionName As String) As String
@@ -207,59 +152,7 @@ Function GetScreenText(row As Integer, col As Integer, length As Integer) As Str
     GetScreenText = SendCommand("GET", row & "," & col & "," & length)
 End Function
 
-Function GetCursorPosition() As String
-    GetCursorPosition = SendCommand("POS")
-End Function
-
-Function CaptureScreen() As String
-    CaptureScreen = SendCommand("SCRN")
-End Function
-
-Function DisconnectSession() As String
-    DisconnectSession = SendCommand("DISC")
-End Function
-
-Function StopListener() As String
-    StopListener = SendCommand("STOP")
-End Function
-
-' ==============================
-' 示例工作流程
-' ==============================
-
-Sub SampleWorkflow()
-    InitializePComm
-    StartListener
-    
-    ' 连接到主机会话
-    Dim result As String
-    result = ConnectSession("SESSION_A")
-    If Left(result, 5) = "ERROR" Then
-        MsgBox "连接失败: " & result, vbCritical
-        Exit Sub
-    End If
-    
-    ' 发送多个并行命令
-    Dim responses(1 To 3) As String
-    responses(1) = GetScreenText(5, 10, 20)
-    responses(2) = GetScreenText(8, 15, 15)
-    responses(3) = GetCursorPosition()
-    
-    ' 处理结果
-    For i = 1 To 3
-        Debug.Print "响应 " & i & ": " & responses(i)
-    Next
-    
-    ' 断开连接
-    result = DisconnectSession()
-    
-    ' 停止监听服务
-    result = StopListener()
-    
-    MsgBox "工作流程完成!", vbInformation
-End Sub
-
-
+' ... 其他封装函数保持不变 ...
 
 
 
@@ -272,24 +165,24 @@ Option Explicit
 ' 配置参数
 Const POLL_INTERVAL = 50  ' 50ms轮询间隔
 Const MAX_WAIT = 30000    ' 30秒超时
-Const FILE_LOCK_TIMEOUT = 5000 ' 5秒文件锁超时
 
 ' 文件路径
-Dim fso, tempFolder, commandFile, resultFile, lockFile
+Dim fso, tempFolder, cmdFile, statusFile, resultFile
 Set fso = CreateObject("Scripting.FileSystemObject")
 tempFolder = "C:\Temp\PComm\"
-commandFile = tempFolder & "PCommCmd.dat"
-resultFile = tempFolder & "PCommRes.dat"
-lockFile = tempFolder & "PCommLock.lck"
+cmdFile = tempFolder & "PCommCmd.dat"
+statusFile = tempFolder & "PCommStatus.dat"
+resultFile = tempFolder & "PCommResult.dat"
 
 ' 确保临时目录存在
 If Not fso.FolderExists(tempFolder) Then
     fso.CreateFolder tempFolder
 End If
 
-' 创建初始文件
-CreateEmptyFile commandFile
-CreateEmptyFile resultFile
+' 初始化状态文件
+If Not fso.FileExists(statusFile) Then
+    WriteFile statusFile, "IDLE"
+End If
 
 ' 初始化PComm对象
 Dim AutECLPS, AutECLSess, sessionConnected, currentSession
@@ -300,103 +193,81 @@ currentSession = ""
 
 ' 主监听循环
 Do While True
-    ProcessCommands
+    CheckAndProcess
     WScript.Sleep POLL_INTERVAL
 Loop
 
-' 获取文件锁 (VBS 版本)
-Function AcquireFileLock()
-    Dim startTime
-    startTime = Timer * 1000 ' 转换为毫秒
+' 检查并处理命令
+Sub CheckAndProcess()
+    Dim currentStatus
+    currentStatus = ReadFile(statusFile)
     
-    ' 尝试获取文件锁
-    Do While True
-        On Error Resume Next
-        ' 尝试创建锁文件
-        fso.CreateTextFile lockFile, True
-        If Err.Number = 0 Then
-            AcquireFileLock = True
-            Exit Function
-        End If
+    ' 只有待处理状态才处理
+    If currentStatus = "PENDING" Then
+        ' 设置状态为处理中
+        WriteFile statusFile, "PROCESSING"
         
-        ' 检查超时
-        If (Timer * 1000 - startTime) > FILE_LOCK_TIMEOUT Then
-            Exit Function
-        End If
+        ' 读取并处理命令
+        Dim cmdData
+        cmdData = ReadFile(cmdFile)
         
-        ' 短时间等待后重试
-        WScript.Sleep 50
-    Loop
-End Function
-
-' 释放文件锁 (VBS 版本)
-Sub ReleaseFileLock()
-    On Error Resume Next
-    If fso.FileExists(lockFile) Then
-        fso.DeleteFile lockFile, True
-    End If
-End Sub
-
-' 处理命令 (带文件锁保护)
-Sub ProcessCommands()
-    ' 检查文件锁
-    If Not AcquireFileLock() Then Exit Sub
-    
-    On Error Resume Next
-    
-    Dim fileSize, commandData, commands
-    fileSize = GetFileSize(commandFile)
-    
-    ' 如果有新指令
-    If fileSize > 0 Then
-        commandData = ReadBinaryFile(commandFile)
-        commands = Split(commandData, "|")
-        
-        ' 处理每个命令
-        Dim i, processedCount
-        processedCount = 0
-        
-        For i = 0 To UBound(commands)
-            If Trim(commands(i)) <> "" Then
-                Dim parts, commandType, commandValue
-                parts = Split(commands(i), "=", 2)
-                commandType = parts(0)
-                
-                If UBound(parts) >= 1 Then 
-                    commandValue = parts(1)
-                Else
-                    commandValue = ""
-                End If
-                
-                ExecuteCommand commandType, commandValue
-                processedCount = processedCount + 1
+        If cmdData <> "" Then
+            Dim parts, cmdType, cmdValue
+            parts = Split(cmdData, "=", 2)
+            cmdType = parts(0)
+            
+            If UBound(parts) >= 1 Then 
+                cmdValue = parts(1)
+            Else
+                cmdValue = ""
             End If
-        Next
-        
-        ' 移除已处理命令
-        If processedCount > 0 Then
-            ' 只保留未处理命令
-            Dim remainingCommands, newCommandData
-            newCommandData = ""
             
-            For i = processedCount To UBound(commands)
-                If Trim(commands(i)) <> "" Then
-                    newCommandData = newCommandData & commands(i) & "|"
-                End If
-            Next
+            ' 执行命令
+            Dim result
+            result = ExecuteCommand(cmdType, cmdValue)
             
-            ' 更新命令文件
-            WriteBinaryFile commandFile, newCommandData
+            ' 写入结果
+            WriteFile resultFile, result
         End If
+        
+        ' 设置状态为完成
+        WriteFile statusFile, "COMPLETE"
     End If
-    
-    ' 释放文件锁
-    ReleaseFileLock
 End Sub
+
+' 原子写入文件 (VBS版本)
+Sub WriteFile(filePath, content)
+    On Error Resume Next
+    Dim tempFilePath
+    tempFilePath = filePath & ".tmp"
+    
+    ' 写入临时文件
+    Set ts = fso.CreateTextFile(tempFilePath, True)
+    ts.Write content
+    ts.Close
+    
+    ' 替换原文件
+    If fso.FileExists(filePath) Then fso.DeleteFile filePath, True
+    fso.MoveFile tempFilePath, filePath
+End Sub
+
+' 读取文件 (VBS版本)
+Function ReadFile(filePath)
+    On Error Resume Next
+    If Not fso.FileExists(filePath) Then Exit Function
+    
+    Set ts = fso.OpenTextFile(filePath, 1) ' 1 = ForReading
+    ReadFile = ts.ReadAll
+    ts.Close
+End Function
 
 ' ==============================
 ' PComm 操作函数 (保持不变)
 ' ==============================
+
+Function ExecuteCommand(cmdType, cmdValue)
+    ' ... 与之前相同 ...
+End Function
 
 Function ConnectSession(sessionName)
     ' ... 与之前相同 ...
@@ -406,61 +277,4 @@ Function SendKeys(keys)
     ' ... 与之前相同 ...
 End Function
 
-Function WaitForString(text)
-    ' ... 与之前相同 ...
-End Function
-
-Function GetScreenText(row, col, length)
-    ' ... 与之前相同 ...
-End Function
-
-Function GetCursorPosition()
-    ' ... 与之前相同 ...
-End Function
-
-Function CaptureScreen()
-    ' ... 与之前相同 ...
-End Function
-
-Function DisconnectSession()
-    ' ... 与之前相同 ...
-End Function
-
-' ==============================
-' 文件操作函数
-' ==============================
-
-Sub CreateEmptyFile(filePath)
-    On Error Resume Next
-    With fso.CreateTextFile(filePath, True)
-        .Write ""
-        .Close
-    End With
-End Sub
-
-Function ReadBinaryFile(filePath)
-    On Error Resume Next
-    If Not fso.FileExists(filePath) Then Exit Function
-    
-    With fso.GetFile(filePath).OpenAsTextStream(1) ' 1 = ForReading
-        ReadBinaryFile = .ReadAll
-        .Close
-    End With
-End Function
-
-Sub WriteBinaryFile(filePath, content)
-    On Error Resume Next
-    With fso.CreateTextFile(filePath, True)
-        .Write content
-        .Close
-    End With
-End Sub
-
-Function GetFileSize(filePath)
-    On Error Resume Next
-    If fso.FileExists(filePath) Then
-        GetFileSize = fso.GetFile(filePath).Size
-    Else
-        GetFileSize = 0
-    End If
-End Function
+' ... 其他PComm函数保持不变 ...
