@@ -81,3 +81,173 @@ Dim userInput
 userInput = WScript.StdIn.ReadLine
 
 WScript.Echo "Received: " & userInput
+
+======================================================================================================
+
+
+
+
+' 模块顶部声明 Windows API 函数和常量
+Private Declare PtrSafe Function AllocConsole Lib "kernel32" () As Long
+Private Declare PtrSafe Function FreeConsole Lib "kernel32" () As Long
+Private Declare PtrSafe Function GetStdHandle Lib "kernel32" (ByVal nStdHandle As Long) As LongPtr
+Private Declare PtrSafe Function WriteConsole Lib "kernel32" Alias "WriteConsoleA" _
+    (ByVal hConsoleOutput As LongPtr, ByVal lpBuffer As String, _
+    ByVal nNumberOfCharsToWrite As Long, lpNumberOfCharsWritten As Long, _
+    ByVal lpReserved As LongPtr) As Long
+Private Declare PtrSafe Function ReadConsole Lib "kernel32" Alias "ReadConsoleA" _
+    (ByVal hConsoleInput As LongPtr, ByVal lpBuffer As String, _
+    ByVal nNumberOfCharsToRead As Long, lpNumberOfCharsRead As Long, _
+    ByVal lpReserved As LongPtr) As Long
+
+' 控制台句柄常量
+Private Const STD_INPUT_HANDLE As Long = -10&
+Private Const STD_OUTPUT_HANDLE As Long = -11&
+Private Const STD_ERROR_HANDLE As Long = -12&
+
+Sub ConsoleCommunicationDemo()
+    ' 分配控制台
+    If AllocConsole() = 0 Then
+        MsgBox "无法分配控制台!", vbCritical
+        Exit Sub
+    End If
+    
+    ' 获取标准输入输出句柄
+    Dim hInput As LongPtr
+    Dim hOutput As LongPtr
+    hInput = GetStdHandle(STD_INPUT_HANDLE)
+    hOutput = GetStdHandle(STD_OUTPUT_HANDLE)
+    
+    ' 写入控制台
+    Dim message As String
+    message = "VBA 通过 WriteConsole 发送消息" & vbCrLf
+    Call WriteToConsole(hOutput, message)
+    
+    ' 从控制台读取
+    Dim userInput As String
+    userInput = ReadFromConsole(hInput, "请输入响应: ")
+    
+    ' 显示结果
+    MsgBox "收到响应: " & userInput, vbInformation, "控制台通信"
+    
+    ' 释放控制台
+    FreeConsole
+End Sub
+
+' 写入控制台的辅助函数
+Function WriteToConsole(ByVal hConsole As LongPtr, ByVal text As String) As Boolean
+    Dim charsWritten As Long
+    Dim result As Long
+    
+    result = WriteConsole(hConsole, text, Len(text), charsWritten, 0)
+    WriteToConsole = (result <> 0)
+End Function
+
+' 从控制台读取的辅助函数
+Function ReadFromConsole(ByVal hConsole As LongPtr, Optional prompt As String = "") As String
+    ' 显示提示
+    If Len(prompt) > 0 Then
+        Call WriteToConsole(hConsole, prompt)
+    End If
+    
+    ' 读取输入
+    Dim buffer As String
+    Dim charsRead As Long
+    buffer = Space$(1024)  ' 分配缓冲区
+    
+    ' 读取控制台输入
+    If ReadConsole(hConsole, buffer, Len(buffer) - 1, charsRead, 0) Then
+        ReadFromConsole = Left$(buffer, charsRead - 2)  ' 移除回车换行
+    Else
+        ReadFromConsole = ""
+    End If
+End Function
+
+
+
+
+' 添加此函数启动并控制 VBScript
+Sub ControlVBScript()
+    ' 分配控制台
+    AllocConsole
+    
+    ' 获取标准输出句柄
+    Dim hOutput As LongPtr
+    hOutput = GetStdHandle(STD_OUTPUT_HANDLE)
+    
+    ' 启动 VBScript
+    Dim wsh As Object
+    Set wsh = CreateObject("WScript.Shell")
+    wsh.Run "cscript ""C:\Path\To\Your\Script.vbs""", 1, False
+    
+    ' 等待 VBScript 初始化
+    Application.Wait Now + TimeValue("00:00:01")
+    
+    ' 向 VBScript 发送命令
+    Call WriteToConsole(hOutput, "COMMAND:GET_DATA" & vbCrLf)
+    
+    ' 获取标准输入句柄
+    Dim hInput As LongPtr
+    hInput = GetStdHandle(STD_INPUT_HANDLE)
+    
+    ' 读取响应
+    Dim response As String
+    response = ReadFromConsole(hInput, "")
+    
+    ' 处理响应
+    If InStr(response, "DATA:") > 0 Then
+        Dim data As String
+        data = Mid(response, InStr(response, ":") + 1)
+        MsgBox "收到数据: " & data, vbInformation
+    Else
+        MsgBox "无效响应: " & response, vbExclamation
+    End If
+    
+    ' 释放控制台
+    FreeConsole
+End Sub
+
+
+
+' 控制台通信协议
+Const COMMAND_PREFIX = "COMMAND:"
+Const DATA_PREFIX = "DATA:"
+
+' 主循环
+Do
+    Dim input
+    input = ReadConsoleLine()
+    
+    If Left(input, Len(COMMAND_PREFIX)) = COMMAND_PREFIX Then
+        Dim command
+        command = Mid(input, Len(COMMAND_PREFIX) + 1)
+        
+        Select Case command
+            Case "GET_DATA"
+                SendResponse DATA_PREFIX & "数据内容 " & Now
+            Case "EXIT"
+                WScript.Quit 0
+            Case Else
+                SendResponse "ERROR:未知命令"
+        End Select
+    Else
+        SendResponse "ERROR:无效命令格式"
+    End If
+Loop
+
+' 从控制台读取一行
+Function ReadConsoleLine()
+    Do
+        If Not WScript.StdIn.AtEndOfStream Then
+            ReadConsoleLine = WScript.StdIn.ReadLine()
+            Exit Do
+        End If
+        WScript.Sleep 100
+    Loop
+End Function
+
+' 发送响应
+Sub SendResponse(message)
+    WScript.StdOut.WriteLine message
+    WScript.StdOut.Flush
+End Sub
