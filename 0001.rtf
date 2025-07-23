@@ -1,407 +1,83 @@
-{\rtf1\ansi\ansicpg936\cocoartf2821
-\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
-{\colortbl;\red255\green255\blue255;}
-{\*\expandedcolortbl;;}
-\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
-\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+' 需在模块顶部声明 API 函数
+Private Declare PtrSafe Function FindWindow Lib "user32" Alias "FindWindowA" _
+    (ByVal lpClassName As String, ByVal lpWindowName As String) As LongPtr
 
-\f0\fs24 \cf0 ' File: LowLatencyPCommListener.vbs\
-Option Explicit\
-On Error Resume Next\
-\
-' \uc0\u37197 \u32622 \u21442 \u25968 \
-Const POLL_INTERVAL = 50  ' 50ms\uc0\u36718 \u35810 \u38388 \u38548 \
-Const MAX_WAIT = 30000    ' 30\uc0\u31186 \u36229 \u26102 \
-Dim START_TIME: START_TIME = Timer()\
-\
-' \uc0\u25991 \u20214 \u36335 \u24452 \
-Dim fso, tempFolder, commandFile, resultFile\
-Set fso = CreateObject("Scripting.FileSystemObject")\
-tempFolder = fso.GetSpecialFolder(2) & "\\"\
-commandFile = tempFolder & "PCommCmd.dat"\
-resultFile = tempFolder & "PCommRes.dat"\
-\
-' \uc0\u21021 \u22987 \u21270 PComm\u23545 \u35937 \
-Dim AutECLPS, AutECLSess\
-Set AutECLPS = CreateObject("PCOMM.autECLPS")\
-Set AutECLSess = CreateObject("PCOMM.autECLSession")\
-\
-' \uc0\u29366 \u24577 \u21464 \u37327 \
-Dim sessionConnected, currentSession, lastResult\
-sessionConnected = False\
-currentSession = ""\
-lastResult = ""\
-\
-' \uc0\u21019 \u24314 \u21021 \u22987 \u25991 \u20214 \
-If Not fso.FileExists(commandFile) Then\
-    CreateEmptyFile commandFile\
-End If\
-CreateEmptyFile resultFile\
-\
-' \uc0\u20027 \u30417 \u21548 \u24490 \u29615 \
-Do While True\
-    ProcessCommands\
-    WScript.Sleep POLL_INTERVAL\
-Loop\
-\
-Sub ProcessCommands()\
-    Dim fileSize\
-    fileSize = GetFileSize(commandFile)\
-    \
-    ' \uc0\u22914 \u26524 \u26377 \u26032 \u25351 \u20196 \
-    If fileSize > 0 Then\
-        Dim commandData, commands\
-        commandData = ReadBinaryFile(commandFile)\
-        commands = Split(commandData, "|")\
-        \
-        ' \uc0\u22788 \u29702 \u27599 \u20010 \u21629 \u20196 \
-        Dim i\
-        For i = 0 To UBound(commands)\
-            If commands(i) <> "" Then\
-                Dim parts, commandType, commandValue\
-                parts = Split(commands(i), "=", 2)\
-                commandType = parts(0)\
-                If UBound(parts) > 0 Then commandValue = parts(1) Else commandValue = ""\
-                \
-                ExecuteCommand commandType, commandValue\
-            End If\
-        Next\
-        \
-        ' \uc0\u28165 \u31354 \u25351 \u20196 \u25991 \u20214 \
-        CreateEmptyFile commandFile\
-    End If\
-End Sub\
-\
-Sub ExecuteCommand(cmdType, cmdValue)\
-    Dim result, coords, coordParts, row, col, length\
-    \
-    Select Case cmdType\
-        Case "CONN"\
-            result = ConnectSession(cmdValue)\
-            \
-        Case "KEYS"\
-            result = SendKeys(cmdValue)\
-            \
-        Case "WAIT"\
-            result = WaitForString(cmdValue)\
-            \
-        Case "GET"\
-            coords = Split(cmdValue, ",")\
-            If UBound(coords) >= 2 Then\
-                row = CInt(coords(0))\
-                col = CInt(coords(1))\
-                length = CInt(coords(2))\
-                result = GetScreenText(row, col, length)\
-            Else\
-                result = "ERROR=\uc0\u26080 \u25928 \u22352 \u26631 "\
-            End If\
-            \
-        Case "POS"\
-            result = GetCursorPosition()\
-            \
-        Case "SCRN"\
-            result = CaptureScreen()\
-            \
-        Case "DISC"\
-            result = DisconnectSession()\
-            \
-        Case "STOP"\
-            result = "STOPPED"\
-            WScript.Quit 0\
-            \
-        Case Else\
-            result = "ERROR=\uc0\u26410 \u30693 \u21629 \u20196 "\
-    End Select\
-    \
-    ' \uc0\u32531 \u23384 \u32467 \u26524 \u24182 \u20889 \u20837 \u25991 \u20214 \
-    lastResult = cmdType & "=" & result\
-    WriteBinaryFile resultFile, lastResult\
-End Sub\
-\
-Function ConnectSession(sessionName)\
-    On Error Resume Next\
-    AutECLSess.SetConnectionByName sessionName\
-    AutECLPS.SetConnectionById AutECLSess.ConnectionID\
-    If Err.Number = 0 Then\
-        sessionConnected = True\
-        currentSession = sessionName\
-        ConnectSession = "OK"\
-    Else\
-        ConnectSession = "ERR:" & Err.Description\
-    End If\
-    On Error GoTo 0\
-End Function\
-\
-Function SendKeys(keys)\
-    If Not sessionConnected Then SendKeys = "ERR:\uc0\u26410 \u36830 \u25509 \u20250 \u35805 ": Exit Function\
-    \
-    On Error Resume Next\
-    AutECLPS.SendKeys keys\
-    If Err.Number = 0 Then\
-        SendKeys = "OK"\
-    Else\
-        SendKeys = "ERR:" & Err.Description\
-    End If\
-    On Error GoTo 0\
-End Function\
-\
-Function WaitForString(text)\
-    If Not sessionConnected Then WaitForString = "ERR:\uc0\u26410 \u36830 \u25509 \u20250 \u35805 ": Exit Function\
-    \
-    On Error Resume Next\
-    AutECLPS.WaitForString text, 1, 1, MAX_WAIT\
-    If Err.Number = 0 Then\
-        WaitForString = "OK"\
-    Else\
-        WaitForString = "ERR:" & Err.Description\
-    End If\
-    On Error GoTo 0\
-End Function\
-\
-Function GetScreenText(row, col, length)\
-    If Not sessionConnected Then GetScreenText = "ERR:\uc0\u26410 \u36830 \u25509 \u20250 \u35805 ": Exit Function\
-    \
-    On Error Resume Next\
-    GetScreenText = AutECLPS.GetText(row, col, length)\
-    If Err.Number <> 0 Then GetScreenText = "ERR:" & Err.Description\
-    On Error GoTo 0\
-End Function\
-\
-Function GetCursorPosition()\
-    If Not sessionConnected Then GetCursorPosition = "ERR:\uc0\u26410 \u36830 \u25509 \u20250 \u35805 ": Exit Function\
-    \
-    On Error Resume Next\
-    GetCursorPosition = AutECLPS.CursorRow & "," & AutECLPS.CursorCol\
-    If Err.Number <> 0 Then GetCursorPosition = "ERR:" & Err.Description\
-    On Error GoTo 0\
-End Function\
-\
-Function CaptureScreen()\
-    If Not sessionConnected Then CaptureScreen = "ERR:\uc0\u26410 \u36830 \u25509 \u20250 \u35805 ": Exit Function\
-    \
-    On Error Resume Next\
-    CaptureScreen = AutECLPS.GetText(1, 1, AutECLPS.Cols * AutECLPS.Rows)\
-    If Err.Number <> 0 Then CaptureScreen = "ERR:" & Err.Description\
-    On Error GoTo 0\
-End Function\
-\
-Function DisconnectSession()\
-    On Error Resume Next\
-    AutECLSess.StopConnection\
-    sessionConnected = False\
-    currentSession = ""\
-    DisconnectSession = "OK"\
-    On Error GoTo 0\
-End Function\
-\
-' \uc0\u25991 \u20214 \u25805 \u20316 \u20989 \u25968 \
-Sub CreateEmptyFile(filePath)\
-    With fso.CreateTextFile(filePath, True)\
-        .Write ""\
-        .Close\
-    End With\
-End Sub\
-\
-Function ReadBinaryFile(filePath)\
-    With fso.GetFile(filePath).OpenAsTextStream(1) ' 1 = ForReading\
-        ReadBinaryFile = .ReadAll\
-        .Close\
-    End With\
-End Function\
-\
-Sub WriteBinaryFile(filePath, content)\
-    With fso.CreateTextFile(filePath, True)\
-        .Write content\
-        .Close\
-    End With\
-End Sub\
-\
-Function GetFileSize(filePath)\
-    If fso.FileExists(filePath) Then\
-        GetFileSize = fso.GetFile(filePath).Size\
-    Else\
-        GetFileSize = 0\
-    End If\
-End Function\
-\
-\
-\
-\
-\
-' VBA \uc0\u27169 \u22359 \u20195 \u30721 \
-Option Explicit\
-\
-' API\uc0\u22768 \u26126 \u29992 \u20110 \u39640 \u31934 \u24230 \u23450 \u26102 \
-#If VBA7 Then\
-    Private Declare PtrSafe Function QueryPerformanceCounter Lib "kernel32" (lpPerformanceCount As Currency) As Long\
-    Private Declare PtrSafe Function QueryPerformanceFrequency Lib "kernel32" (lpFrequency As Currency) As Long\
-    Private Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)\
-#Else\
-    Private Declare Function QueryPerformanceCounter Lib "kernel32" (lpPerformanceCount As Currency) As Long\
-    Private Declare Function QueryPerformanceFrequency Lib "kernel32" (lpFrequency As Currency) As Long\
-    Private Declare Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)\
-#End If\
-\
-' \uc0\u20840 \u23616 \u24120 \u37327 \
-Const POLL_INTERVAL As Integer = 10  ' 10ms\uc0\u36718 \u35810 \u38388 \u38548 \
-Const MAX_WAIT_MS As Long = 5000     ' 5\uc0\u31186 \u36229 \u26102 \
-Const TEMP_FOLDER As String = "C:\\Temp\\" ' \uc0\u20351 \u29992 \u26356 \u24555 \u30340 \u23384 \u20648 \u20301 \u32622 \
-\
-' \uc0\u24615 \u33021 \u35745 \u26102 \u21464 \u37327 \
-Dim freq As Currency\
-Dim startCount As Currency\
-Dim endCount As Currency\
-\
-Sub StartLowLatencyListener()\
-    ' \uc0\u21551 \u21160 VBS\u30417 \u21548 \u26381 \u21153 \
-    Dim wsh As Object\
-    Set wsh = CreateObject("WScript.Shell")\
-    wsh.Run "wscript """ & ThisWorkbook.Path & "\\LowLatencyPCommListener.vbs""", 0, False\
-    Set wsh = Nothing\
-End Sub\
-\
-Function SendCommand(cmdType As String, Optional cmdValue As String = "") As String\
-    Dim commandFile As String, resultFile As String\
-    commandFile = TEMP_FOLDER & "PCommCmd.dat"\
-    resultFile = TEMP_FOLDER & "PCommRes.dat"\
-    \
-    ' \uc0\u20889 \u20837 \u21629 \u20196 \u65288 \u20108 \u36827 \u21046 \u26684 \u24335 \u65289 \
-    WriteBinaryFile commandFile, cmdType & "=" & cmdValue & "|"\
-    \
-    ' \uc0\u24320 \u22987 \u24615 \u33021 \u35745 \u26102 \
-    StartTimer\
-    \
-    ' \uc0\u31561 \u24453 \u21709 \u24212 \
-    Dim response As String, elapsed As Double\
-    Do\
-        If FileExists(resultFile) Then\
-            response = ReadBinaryFile(resultFile)\
-            If InStr(response, cmdType & "=") > 0 Then\
-                SendCommand = ExtractResult(response)\
-                Exit Do\
-            End If\
-        End If\
-        \
-        ' \uc0\u26816 \u26597 \u36229 \u26102 \
-        elapsed = GetElapsedMs()\
-        If elapsed > MAX_WAIT_MS Then\
-            SendCommand = "ERROR=\uc0\u36229 \u26102 \u31561 \u24453 \u21709 \u24212  (" & elapsed & "ms)"\
-            Exit Do\
-        End If\
-        \
-        ' \uc0\u30701 \u38388 \u38548 \u31561 \u24453 \
-        Sleep POLL_INTERVAL\
-    Loop\
-    \
-    ' \uc0\u35760 \u24405 \u24310 \u36831 \
-    Debug.Print "\uc0\u21629 \u20196 \u25191 \u34892 \u26102 \u38388 : " & GetElapsedMs() & "ms"\
-End Function\
-\
-' \uc0\u25991 \u20214 \u25805 \u20316 \u20989 \u25968 \
-Function FileExists(filePath As String) As Boolean\
-    FileExists = (Dir(filePath) <> "")\
-End Function\
-\
-Sub WriteBinaryFile(filePath As String, content As String)\
-    Open filePath For Binary As #1\
-    Put #1, , content\
-    Close #1\
-End Sub\
-\
-Function ReadBinaryFile(filePath As String) As String\
-    If Not FileExists(filePath) Then Exit Function\
-    \
-    Dim content As String\
-    Open filePath For Binary As #1\
-    content = Space(LOF(1))\
-    Get #1, , content\
-    Close #1\
-    \
-    ReadBinaryFile = content\
-End Function\
-\
-Function ExtractResult(fullResponse As String) As String\
-    Dim pos As Integer\
-    pos = InStr(fullResponse, "=")\
-    If pos > 0 Then\
-        ExtractResult = Mid(fullResponse, pos + 1)\
-    Else\
-        ExtractResult = fullResponse\
-    End If\
-End Function\
-\
-' \uc0\u39640 \u31934 \u24230 \u35745 \u26102 \u20989 \u25968 \
-Sub StartTimer()\
-    QueryPerformanceFrequency freq\
-    QueryPerformanceCounter startCount\
-End Sub\
-\
-Function GetElapsedMs() As Double\
-    QueryPerformanceCounter endCount\
-    GetElapsedMs = (endCount - startCount) / freq * 1000\
-End Function\
-\
-' \uc0\u23553 \u35013 \u30340 \u21629 \u20196 \u20989 \u25968 \
-Function ConnectSession(sessionName As String) As String\
-    ConnectSession = SendCommand("CONN", sessionName)\
-End Function\
-\
-Function SendKeysToSession(keys As String) As String\
-    SendKeysToSession = SendCommand("KEYS", keys)\
-End Function\
-\
-Function WaitForText(text As String) As String\
-    WaitForText = SendCommand("WAIT", text)\
-End Function\
-\
-Function GetScreenText(row As Integer, col As Integer, length As Integer) As String\
-    GetScreenText = SendCommand("GET", row & "," & col & "," & length)\
-End Function\
-\
-Function GetCursorPosition() As String\
-    GetCursorPosition = SendCommand("POS")\
-End Function\
-\
-Function CaptureScreen() As String\
-    CaptureScreen = SendCommand("SCRN")\
-End Function\
-\
-Function DisconnectSession() As String\
-    DisconnectSession = SendCommand("DISC")\
-End Function\
-\
-Function StopListener() As String\
-    StopListener = SendCommand("STOP")\
-End Function\
-\
-' \uc0\u24615 \u33021 \u27979 \u35797 \u20989 \u25968 \
-Sub TestLatency()\
-    StartLowLatencyListener\
-    ConnectSession "SESSION_A"\
-    \
-    Dim i As Integer, totalTime As Double, avgTime As Double\
-    Dim startTime As Double, result As String\
-    \
-    ' \uc0\u27979 \u35797 \u31616 \u21333 \u21629 \u20196 \
-    For i = 1 To 10\
-        startTime = Timer\
-        result = SendKeysToSession("TEST" & i)\
-        totalTime = totalTime + (Timer - startTime) * 1000\
-    Next i\
-    \
-    avgTime = totalTime / 10\
-    Debug.Print "\uc0\u24179 \u22343 \u31616 \u21333 \u21629 \u20196 \u24310 \u36831 : " & Format(avgTime, "0.0") & "ms"\
-    \
-    ' \uc0\u27979 \u35797 \u23631 \u24149 \u35835 \u21462 \
-    totalTime = 0\
-    For i = 1 To 5\
-        startTime = Timer\
-        result = GetScreenText(10, 5, 20)\
-        totalTime = totalTime + (Timer - startTime) * 1000\
-    Next i\
-    \
-    avgTime = totalTime / 5\
-    Debug.Print "\uc0\u24179 \u22343 \u23631 \u24149 \u35835 \u21462 \u24310 \u36831 : " & Format(avgTime, "0.0") & "ms"\
-    \
-    StopListener\
-End Sub}
+Private Declare PtrSafe Function GetWindowThreadProcessId Lib "user32" _
+    (ByVal hWnd As LongPtr, lpdwProcessId As LongPtr) As Long
+
+Private Declare PtrSafe Function AttachConsole Lib "kernel32" _
+    (ByVal dwProcessId As Long) As Long
+
+Private Declare PtrSafe Function WriteConsole Lib "kernel32" _
+    (ByVal hConsoleOutput As Long, ByVal lpBuffer As String, _
+    ByVal nNumberOfCharsToWrite As Long, lpNumberOfCharsWritten As Long, _
+    lpReserved As Any) As Long
+
+Private Declare PtrSafe Function FreeConsole Lib "kernel32" () As Long
+
+Sub SendInputToConsole()
+    Dim hWnd As LongPtr
+    Dim pid As LongPtr
+    Dim scriptPath As String
+    Dim wsh As Object
+    
+    scriptPath = "C:\path\to\script.vbs"
+    Set wsh = CreateObject("WScript.Shell")
+    
+    ' 启动控制台程序
+    wsh.Run "cmd /c cscript """ & scriptPath & """", 0, False
+    Application.Wait Now + TimeValue("00:00:01")
+    
+    ' 查找控制台窗口
+    hWnd = FindWindow("ConsoleWindowClass", vbNullString)
+    If hWnd = 0 Then Exit Sub
+    
+    ' 获取进程ID
+    GetWindowThreadProcessId hWnd, pid
+    
+    ' 附加到控制台
+    If AttachConsole(pid) <> 0 Then
+        Dim written As Long
+        Dim inputText As String
+        
+        ' 要发送的输入内容
+        inputText = "This is input from VBA" & vbCrLf
+        
+        ' 写入控制台
+        WriteConsole -11&, inputText, Len(inputText), written, ByVal 0&
+        
+        ' 释放控制台
+        FreeConsole
+    End If
+End Sub
+
+======================================================================================================
+Sub RunWithPipeInput()
+    Dim wsh As Object
+    Dim oExec As Object
+    Dim inputText As String
+    
+    Set wsh = CreateObject("WScript.Shell")
+    inputText = "Input data from VBA" & vbCrLf & "Second line"
+    
+    ' 启动进程并重定向输入
+    Set oExec = wsh.Exec("cscript C:\path\to\script.vbs")
+    
+    ' 向标准输入写入数据
+    oExec.StdIn.Write inputText
+    oExec.StdIn.Close
+    
+    ' 读取输出（可选）
+    Dim output As String
+    output = oExec.StdOut.ReadAll
+    Debug.Print output
+End Sub
+
+
+
+' script.vbs
+WScript.StdOut.Write "Enter input: "
+Dim userInput
+userInput = WScript.StdIn.ReadLine
+
+WScript.Echo "Received: " & userInput
