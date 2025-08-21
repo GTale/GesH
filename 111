@@ -1,179 +1,48 @@
-# 加载 Microsoft.mshtml.dll 并禁用互操作类型嵌入
-$dllPaths = @(
-    "C:\Windows\System32\mshtml.dll",
-    "C:\Program Files (x86)\Microsoft Office\root\vfs\SystemX86\mshtml.dll"
-)
-foreach ($path in $dllPaths) {
-    if (Test-Path $path) {
-        Add-Type -Path $path -CompilerParameters @("/embed-")
-        break
-    }
-}
-
-# 定义 Win32Interop 类（关键修复）
-Add-Type -TypeDefinition @"
+# Add user32 APIs: EnumChildWindows, GetClassName
+Add-Type @"
 using System;
-using System.Runtime.InteropServices;
 using System.Text;
+using System.Runtime.InteropServices;
 
-public class Win32Interop {
-    // 查找窗口API
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern IntPtr FindWindowEx(
-        IntPtr hwndParent, 
-        IntPtr hwndChildAfter, 
-        string lpszClass, 
-        string lpszWindow
-    );
-    
-    // 获取窗口类名API
+public class User32 {
+    public delegate bool EnumChildProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumChildWindows(IntPtr hWndParent, EnumChildProc lpEnumFunc, IntPtr lParam);
+
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-    public static extern int GetClassName(
-        IntPtr hWnd, 
-        StringBuilder lpClassName, 
-        int nMaxCount
-    );
-    
-    // 获取窗口文本API
-    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    public static extern int GetWindowText(
-        IntPtr hWnd, 
-        StringBuilder lpString, 
-        int nMaxCount
-    );
-    
-    // 修改为返回通用对象
-    [DllImport("oleacc.dll")]
-    public static extern int ObjectFromLresult(
-        int lResult, 
-        ref Guid riid, 
-        int wParam, 
-        [MarshalAs(UnmanagedType.IUnknown)] out object ppvObject
-    );
-    
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern int SendMessage(
-        IntPtr hWnd, 
-        uint Msg, 
-        IntPtr wParam, 
-        IntPtr lParam
-    );
-    
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern uint RegisterWindowMessage(string lpString);
+    public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 }
-"@ -ReferencedAssemblies "Microsoft.mshtml"
-
-function Get-InternetExplorerServerHandle {
-    param(
-        [Parameter(Mandatory=$true)]
-        [IntPtr]$ParentWindow
-    )
-    
-    $MAX_CLASS_LENGTH = 256
-    $classNameBuilder = New-Object System.Text.StringBuilder($MAX_CLASS_LENGTH)
-    $childWindow = [IntPtr]::Zero
-    
-    do {
-        $childWindow = [Win32Interop]::FindWindowEx($ParentWindow, $childWindow, $null, $null)
-        if ($childWindow -ne [IntPtr]::Zero) {
-            [void][Win32Interop]::GetClassName($childWindow, $classNameBuilder, $MAX_CLASS_LENGTH)
-            $className = $classNameBuilder.ToString()
-            
-            if ($className -eq "Internet Explorer_Server") {
-                return $childWindow
-            }
-            
-            # 递归查找子窗口
-            $grandChild = Get-InternetExplorerServerHandle -ParentWindow $childWindow
-            if ($grandChild -ne [IntPtr]::Zero) {
-                return $grandChild
-            }
-        }
-    } while ($childWindow -ne [IntPtr]::Zero)
-    
-    return [IntPtr]::Zero
-}
-
-# 1. 获取Edge浏览器主窗口句柄
-$edgeProcess = Get-Process msedge -ErrorAction SilentlyContinue | 
-    Where-Object { $_.MainWindowHandle -ne 0 } | 
-    Select-Object -First 1
-
-if (-not $edgeProcess) {
-    Write-Error "未找到运行的Microsoft Edge进程"
-    exit 1
-}
-
-$edgeMainWindow = $edgeProcess.MainWindowHandle
-Write-Host "[√] Edge主窗口句柄: 0x$($edgeMainWindow.ToString('X8'))"
-
-# 2. 查找Internet Explorer_Server窗口
-$ieServerHandle = Get-InternetExplorerServerHandle -ParentWindow $edgeMainWindow
-if ($ieServerHandle -eq [IntPtr]::Zero) {
-    Write-Error "未找到Internet Explorer_Server窗口"
-    Write-Host "排查建议:"
-    Write-Host "1. 确认标签页处于IE模式 (右键标签页检查)"
-    Write-Host "2. 在Edge设置中启用IE模式 (edge://settings/defaultBrowser)"
-    Write-Host "3. 确保页面已完成加载"
-    exit 1
-}
-Write-Host "[√] Internet Explorer_Server句柄: 0x$($ieServerHandle.ToString('X8'))"
-
-# 3. 获取文档对象
-$WM_HTML_GETOBJECT = [Win32Interop]::RegisterWindowMessage("WM_HTML_GETOBJECT")
-$lResult = [Win32Interop]::SendMessage($ieServerHandle, $WM_HTML_GETOBJECT, [IntPtr]::Zero, [IntPtr]::Zero)
-
-if ($lResult -eq 0) {
-    Write-Error "WM_HTML_GETOBJECT消息未返回有效结果"
-    exit 1
-}
-
-$IID_IHTMLDocument = [Guid]::new("626FC520-A41E-11CF-A731-00A0C9082637")
-$docObject = $null
-$hr = [Win32Interop]::ObjectFromLresult($lResult, [ref]$IID_IHTMLDocument, 0, [ref]$docObject)
-
-if ($hr -ne 0 -or $null -eq $docObject) {
-    Write-Error "获取文档对象失败 (HRESULT: 0x$($hr.ToString('X8')))"
-    exit 1
-}
-
-# 转换为强类型接口
-$doc = [mshtml.IHTMLDocument2]$docObject
-Write-Host "[√] 文档对象获取成功!"
-
-# 4. DOM操作示例
-Write-Host "`n=== 文档信息 ==="
-Write-Host "标题: $($doc.title)"
-Write-Host "URL: $($doc.url)"
-Write-Host "域名: $($doc.domain)"
-
-# 动态修改DOM内容
-$newElement = $doc.createElement("div")
-$newElement.innerHTML = @"
-<h1 style="color: #2c3e50;">PowerShell DOM操作成功!</h1>
-<p style="background: #ecf0f1; padding: 10px;">
-    当前时间: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")<br>
-    使用Edge IE模式 + mshtml.dll实现
-</p>
 "@
-$doc.body.appendChild($newElement) | Out-Null
 
-# 定位并修改特定元素
-$target = $doc.getElementById("contentContainer")
-if ($target -ne $null) {
-    $target.innerText = "DOM操作成功! 更新时间: $(Get-Date -Format "HH:mm:ss")"
-    $target.style.color = "#e74c3c"
-    $target.style.fontWeight = "bold"
-} else {
-    Write-Warning "未找到ID为'contentContainer'的元素"
+# Function to get class name from HWND
+function Get-ClassName {
+    param([IntPtr]$hwnd)
+    $sb = New-Object System.Text.StringBuilder 256
+    [User32]::GetClassName($hwnd, $sb, $sb.Capacity) | Out-Null
+    return $sb.ToString()
 }
 
-# 获取所有链接（前5个）
-Write-Host "`n=== 页面链接 (前5个) ==="
-$links = $doc.links
-for ($i = 0; $i -lt [Math]::Min(5, $links.length); $i++) {
-    Write-Host "$($i+1). $($links[$i].href)"
+# Example: Root HWND (replace with your parent HWND)
+$rootHwnd = [IntPtr]::Zero   # desktop, or use another hwnd
+
+# Store results
+$matches = @()
+
+# Callback for EnumChildWindows
+$callback = [User32+EnumChildProc]{
+    param([IntPtr] $hWnd, [IntPtr] $lParam)
+
+    $cls = Get-ClassName $hWnd
+    if ($cls -like "*aaa*") {
+        $GLOBALS:matches += $hWnd
+    }
+
+    return $true # continue enumeration
 }
 
-Write-Host "`n[操作完成] 页面内容已更新!"
+# Enumerate children
+[User32]::EnumChildWindows($rootHwnd, $callback, [IntPtr]::Zero)
+
+Write-Host "Found child HWNDs:" $matches
