@@ -1,48 +1,64 @@
-Add-Type @"\
+Add-Type -TypeDefinition @"\
 using System;\
 using System.Runtime.InteropServices;\
 \
-public class IEAccess {\
-    // 导入 Windows API\
+public class MSAAInterop {\
     [DllImport("oleacc.dll")]\
-    public static extern int AccessibleObjectFromWindow(\
-        IntPtr hwnd, uint id, ref Guid iid, [Out, MarshalAs(UnmanagedType.IUnknown)] out object ptr\
+    public static extern int ObjectFromLresult(\
+        int lResult, \
+        ref Guid riid, \
+        int wParam, \
+        out IHTMLDocument2 ppvObject\
     );\
     \
-    // IHTMLDocument2 的 GUID\
-    public static readonly Guid IID_IHTMLDocument = new Guid("626FC520-A41E-11CF-A731-00A0C9082637");\
+    [DllImport("user32.dll", SetLastError = true)]\
+    public static extern int SendMessage(\
+        IntPtr hWnd, \
+        uint Msg, \
+        int wParam, \
+        int lParam\
+    );\
     \
-    // 获取文档对象\
-    public static mshtml.IHTMLDocument2 GetDocumentFromHWND(IntPtr hwnd) {\
-        object obj = null;\
-        int hr = AccessibleObjectFromWindow(\
-            hwnd, \
-            0, \
-            ref IID_IHTMLDocument, \
-            out obj\
-        );\
-        if (hr != 0 || obj == null) return null;\
-        return (mshtml.IHTMLDocument2)obj;\
-    }\
+    [DllImport("user32.dll", SetLastError = true)]\
+    public static extern uint RegisterWindowMessage(string lpString);\
+}\
+\
+[ComImport, Guid("626FC520-A41E-11CF-A731-00A0C9082637"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\
+public interface IHTMLDocument2 {\
+    // 精简声明关键接口方法\
+    void dummy(); // 实际使用需补充完整声明\
 }\
 "@ -ReferencedAssemblies "Microsoft.mshtml"
 
-# 1. 获取 IE 窗口句柄
-$ieProcess = Get-Process | Where-Object { $_.ProcessName -eq "iexplore" }
-if (-not $ieProcess) { throw "未找到运行中的 IE 进程" }
+# 获取目标窗口句柄 (替换为实际HWND)
+$hWnd = [IntPtr]0x000A0B0C  # 示例值，需替换为实际句柄
 
-# 2. 遍历窗口获取文档对象
-$ieProcess | ForEach-Object {
-    $hwnd = $_.MainWindowHandle
-    if ($hwnd -ne [IntPtr]::Zero) {
-        try {
-            $doc = [IEAccess]::GetDocumentFromHWND($hwnd)
-            if ($doc) {
-                Write-Host "成功获取文档对象，当前 URL: $($doc.url)"
-                # 3. 操作 DOM 示例
-                $searchBox = $doc.getElementById("searchInput")
-                if ($searchBox) { $searchBox.value = "PowerShell 修改内容" }
-            }
-        } catch { Write-Warning "窗口 $hwnd 操作失败: $_" }
+# 注册WM_HTML_GETOBJECT消息
+$WM_HTML_GETOBJECT = [MSAAInterop]::RegisterWindowMessage("WM_HTML_GETOBJECT")
+
+# 发送消息获取对象引用
+$lResult = [MSAAInterop]::SendMessage($hWnd, $WM_HTML_GETOBJECT, 0, 0)
+
+if ($lResult -ne 0) {
+    # 定义IHTMLDocument2的GUID
+    $IID_IHTMLDocument = [Guid]::new("626FC520-A41E-11CF-A731-00A0C9082637")
+    
+    # 获取文档对象
+    $doc = $null
+    [MSAAInterop]::ObjectFromLresult($lResult, [ref]$IID_IHTMLDocument, 0, [ref]$doc) | Out-Null
+    
+    if ($null -ne $doc) {
+        # 访问文档属性
+        Write-Host "成功获取IHTMLDocument2对象！"
+        Write-Host "页面标题: $($doc.title)"
+        Write-Host "URL: $($doc.url)"
+        
+        # 示例：获取body内容
+        $bodyHtml = $doc.body.outerHTML.Substring(0, [Math]::Min(100, $doc.body.outerHTML.Length))
+        Write-Host "Body预览: $bodyHtml..."
+    } else {
+        Write-Error "获取文档对象失败，请检查窗口句柄和IE模式状态"
     }
+} else {
+    Write-Error "WM_HTML_GETOBJECT消息未返回有效结果"
 }
