@@ -2,7 +2,33 @@ Add-Type -TypeDefinition @"\
 using System;\
 using System.Runtime.InteropServices;\
 \
-public class MSAAInterop {\
+public class Win32Interop {\
+    // 查找窗口API\
+    [DllImport("user32.dll", SetLastError = true)]\
+    public static extern IntPtr FindWindowEx(\
+        IntPtr hwndParent, \
+        IntPtr hwndChildAfter, \
+        string lpszClass, \
+        string lpszWindow\
+    );\
+    \
+    // 获取窗口类名API\
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]\
+    public static extern int GetClassName(\
+        IntPtr hWnd, \
+        System.Text.StringBuilder lpClassName, \
+        int nMaxCount\
+    );\
+    \
+    // 获取窗口文本API\
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]\
+    public static extern int GetWindowText(\
+        IntPtr hWnd, \
+        System.Text.StringBuilder lpString, \
+        int nMaxCount\
+    );\
+    \
+    // 原有MSAA接口\
     [DllImport("oleacc.dll")]\
     public static extern int ObjectFromLresult(\
         int lResult, \
@@ -30,34 +56,90 @@ public interface IHTMLDocument2 {\
 }\
 "@ -ReferencedAssemblies "Microsoft.mshtml"
 
-# 获取目标窗口句柄 (替换为实际HWND)
-$hWnd = [IntPtr]0x000A0B0C  # 示例值，需替换为实际句柄
-
-# 注册WM_HTML_GETOBJECT消息
-$WM_HTML_GETOBJECT = [MSAAInterop]::RegisterWindowMessage("WM_HTML_GETOBJECT")
-
-# 发送消息获取对象引用
-$lResult = [MSAAInterop]::SendMessage($hWnd, $WM_HTML_GETOBJECT, 0, 0)
-
-if ($lResult -ne 0) {
-    # 定义IHTMLDocument2的GUID
-    $IID_IHTMLDocument = [Guid]::new("626FC520-A41E-11CF-A731-00A0C9082637")
+function Get-InternetExplorerServerHandle {
+    param(
+        [Parameter(Mandatory=$true)]
+        [IntPtr]$ParentWindow
+    )
     
-    # 获取文档对象
+    # 最大类名长度
+    $MAX_CLASS_LENGTH = 256
+    $classNameBuilder = New-Object System.Text.StringBuilder($MAX_CLASS_LENGTH)
+    
+    # 遍历所有子窗口
+    $childWindow = [IntPtr]::Zero
+    do {
+        $childWindow = [Win32Interop]::FindWindowEx($ParentWindow, $childWindow, $null, $null)
+        if ($childWindow -ne [IntPtr]::Zero) {
+            # 获取窗口类名
+            [void][Win32Interop]::GetClassName($childWindow, $classNameBuilder, $MAX_CLASS_LENGTH)
+            $className = $classNameBuilder.ToString()
+            
+            # 检查是否是目标窗口
+            if ($className -eq "Internet Explorer_Server") {
+                return $childWindow
+            }
+            
+            # 递归检查子窗口
+            $grandChild = Get-InternetExplorerServerHandle -ParentWindow $childWindow
+            if ($grandChild -ne [IntPtr]::Zero) {
+                return $grandChild
+            }
+        }
+    } while ($childWindow -ne [IntPtr]::Zero)
+    
+    return [IntPtr]::Zero
+}
+
+# 1. 获取Edge浏览器主窗口句柄
+$edgeProcess = Get-Process msedge | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+if (-not $edgeProcess) {
+    Write-Error "未找到运行的Microsoft Edge进程"
+    exit
+}
+$edgeMainWindow = $edgeProcess.MainWindowHandle
+Write-Host "Edge主窗口句柄: 0x$($edgeMainWindow.ToString('X8'))"
+
+# 2. 查找Internet Explorer_Server窗口
+$ieServerHandle = Get-InternetExplorerServerHandle -ParentWindow $edgeMainWindow
+if ($ieServerHandle -eq [IntPtr]::Zero) {
+    Write-Error "未找到Internet Explorer_Server窗口，请确认:"
+    Write-Host "1. 当前标签页是否处于IE模式 (右键标签页检查)"
+    Write-Host "2. 是否在Edge设置中启用了IE模式 (edge://settings/defaultBrowser)"
+    exit
+}
+Write-Host "Internet Explorer_Server句柄: 0x$($ieServerHandle.ToString('X8'))"
+
+# 3. 注册并发送消息获取文档对象
+$WM_HTML_GETOBJECT = [Win32Interop]::RegisterWindowMessage("WM_HTML_GETOBJECT")
+$lResult = [Win32Interop]::SendMessage($ieServerHandle, $WM_HTML_GETOBJECT, 0, 0)
+if ($lResult -ne 0) {
+    $IID_IHTMLDocument = [Guid]::new("626FC520-A41E-11CF-A731-00A0C9082637")
     $doc = $null
-    [MSAAInterop]::ObjectFromLresult($lResult, [ref]$IID_IHTMLDocument, 0, [ref]$doc) | Out-Null
+    [Win32Interop]::ObjectFromLresult($lResult, [ref]$IID_IHTMLDocument, 0, [ref]$doc) | Out-Null
     
     if ($null -ne $doc) {
         # 访问文档属性
-        Write-Host "成功获取IHTMLDocument2对象！"
-        Write-Host "页面标题: $($doc.title)"
+        Write-Host "`n=== 文档信息 ==="
+        Write-Host "标题: $($doc.title)"
         Write-Host "URL: $($doc.url)"
+        Write-Host "域名: $($doc.domain)"
         
-        # 示例：获取body内容
-        $bodyHtml = $doc.body.outerHTML.Substring(0, [Math]::Min(100, $doc.body.outerHTML.Length))
-        Write-Host "Body预览: $bodyHtml..."
+        # 获取body内容
+        if ($doc.body -ne $null) {
+            $bodyHtml = $doc.body.outerHTML
+            $previewLength = [Math]::Min(200, $bodyHtml.Length)
+            Write-Host "`nBody预览: $($bodyHtml.Substring(0, $previewLength))..."
+        }
+        
+        # 示例：获取所有链接
+        $links = $doc.links
+        Write-Host "`n=== 页面链接 (前5个) ==="
+        for ($i = 0; $i -lt [Math]::Min(5, $links.length); $i++) {
+            Write-Host "$($i+1). $($links[$i].href)"
+        }
     } else {
-        Write-Error "获取文档对象失败，请检查窗口句柄和IE模式状态"
+        Write-Error "获取文档对象失败"
     }
 } else {
     Write-Error "WM_HTML_GETOBJECT消息未返回有效结果"
