@@ -1,11 +1,16 @@
-# Add user32 APIs: EnumChildWindows, GetClassName
+# Add user32 APIs
 Add-Type @"
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
 
 public class User32 {
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     public delegate bool EnumChildProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -13,10 +18,12 @@ public class User32 {
 
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 }
 "@
 
-# Function to get class name from HWND
 function Get-ClassName {
     param([IntPtr]$hwnd)
     $sb = New-Object System.Text.StringBuilder 256
@@ -24,25 +31,53 @@ function Get-ClassName {
     return $sb.ToString()
 }
 
-# Example: Root HWND (replace with your parent HWND)
-$rootHwnd = [IntPtr]::Zero   # desktop, or use another hwnd
+function Get-WindowTitle {
+    param([IntPtr]$hwnd)
+    $sb = New-Object System.Text.StringBuilder 512
+    [User32]::GetWindowText($hwnd, $sb, $sb.Capacity) | Out-Null
+    return $sb.ToString()
+}
 
-# Store results
+# 1) Find all Edge main windows
+$edgeWindows = @()
+
+$enumWinProc = [User32+EnumWindowsProc]{
+    param([IntPtr] $hWnd, [IntPtr] $lParam)
+
+    $cls = Get-ClassName $hWnd
+    if ($cls -like "Chrome_WidgetWin_*") {   # Edge top window class
+        $title = Get-WindowTitle $hWnd
+        if ($title -ne "") {
+            $edgeWindows += [PSCustomObject]@{
+                Hwnd  = $hWnd
+                Title = $title
+            }
+        }
+    }
+    return $true
+}
+
+[User32]::EnumWindows($enumWinProc, [IntPtr]::Zero)
+
+Write-Host "Found Edge Windows:"
+$edgeWindows | Format-Table
+
+# 2) Pick the Edge window you want (example: first one)
+$targetEdge = $edgeWindows[0].Hwnd
+
+# 3) Find descendants where classname contains "aaa"
 $matches = @()
 
-# Callback for EnumChildWindows
-$callback = [User32+EnumChildProc]{
+$enumChildProc = [User32+EnumChildProc]{
     param([IntPtr] $hWnd, [IntPtr] $lParam)
 
     $cls = Get-ClassName $hWnd
     if ($cls -like "*aaa*") {
         $GLOBALS:matches += $hWnd
     }
-
-    return $true # continue enumeration
+    return $true
 }
 
-# Enumerate children
-[User32]::EnumChildWindows($rootHwnd, $callback, [IntPtr]::Zero)
+[User32]::EnumChildWindows($targetEdge, $enumChildProc, [IntPtr]::Zero)
 
-Write-Host "Found child HWNDs:" $matches
+Write-Host "Matching descendants:" $matches
