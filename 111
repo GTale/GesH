@@ -1,83 +1,38 @@
-# Add user32 APIs
-Add-Type @"
-using System;
-using System.Text;
-using System.Runtime.InteropServices;
+# 加载必要的 .NET 库
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
 
-public class User32 {
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-    public delegate bool EnumChildProc(IntPtr hWnd, IntPtr lParam);
+# 捕获整个屏幕（支持多显示器）
+$screenBounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+$bitmap = New-Object System.Drawing.Bitmap $screenBounds.Width, $screenBounds.Height
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$graphics.CopyFromScreen($screenBounds.Location, [System.Drawing.Point]::Empty, $screenBounds.Size)
 
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+# 保存为临时文件
+$tempFile = [System.IO.Path]::GetTempFileName() + ".png"
+$bitmap.Save($tempFile, [System.Drawing.Imaging.ImageFormat]::Png)
+$graphics.Dispose()
+$bitmap.Dispose()
+Write-Host "截图已保存到: $tempFile"
 
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool EnumChildWindows(IntPtr hWndParent, EnumChildProc lpEnumFunc, IntPtr lParam);
 
-    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-    public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
-    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-    public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
-}
-"@
+# 创建 Outlook 对象
+$outlook = New-Object -ComObject Outlook.Application
+$mail = $outlook.CreateItem(0)  # 0 表示邮件项
 
-function Get-ClassName {
-    param([IntPtr]$hwnd)
-    $sb = New-Object System.Text.StringBuilder 256
-    [User32]::GetClassName($hwnd, $sb, $sb.Capacity) | Out-Null
-    return $sb.ToString()
-}
+# 配置邮件内容
+$mail.To = "recipient@example.com"  # 替换为实际邮箱
+$mail.Subject = "自动发送的屏幕截图 - $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+$mail.Body = "系统自动捕获的屏幕截图，请查收附件。"
 
-function Get-WindowTitle {
-    param([IntPtr]$hwnd)
-    $sb = New-Object System.Text.StringBuilder 512
-    [User32]::GetWindowText($hwnd, $sb, $sb.Capacity) | Out-Null
-    return $sb.ToString()
-}
+# 添加截图附件
+$mail.Attachments.Add($tempFile) | Out-Null
 
-# 1) Find all Edge main windows
-$edgeWindows = @()
+# 发送邮件（后台静默发送）
+$mail.Send()
+Write-Host "邮件已发送！"
 
-$enumWinProc = [User32+EnumWindowsProc]{
-    param([IntPtr] $hWnd, [IntPtr] $lParam)
-
-    $cls = Get-ClassName $hWnd
-    if ($cls -like "Chrome_WidgetWin_*") {   # Edge top window class
-        $title = Get-WindowTitle $hWnd
-        if ($title -ne "") {
-            $edgeWindows += [PSCustomObject]@{
-                Hwnd  = $hWnd
-                Title = $title
-            }
-        }
-    }
-    return $true
-}
-
-[User32]::EnumWindows($enumWinProc, [IntPtr]::Zero)
-
-Write-Host "Found Edge Windows:"
-$edgeWindows | Format-Table
-
-# 2) Pick the Edge window you want (example: first one)
-$targetEdge = $edgeWindows[0].Hwnd
-
-# 3) Find descendants where classname contains "aaa"
-$matches = @()
-
-$enumChildProc = [User32+EnumChildProc]{
-    param([IntPtr] $hWnd, [IntPtr] $lParam)
-
-    $cls = Get-ClassName $hWnd
-    if ($cls -like "*aaa*") {
-        $GLOBALS:matches += $hWnd
-    }
-    return $true
-}
-
-[User32]::EnumChildWindows($targetEdge, $enumChildProc, [IntPtr]::Zero)
-
-Write-Host "Matching descendants:" $matches
+# 清理临时文件
+Start-Sleep -Seconds 2  # 确保附件已附加
+Remove-Item $tempFile -Force
