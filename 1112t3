@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Base64 Image to PDF</title>
+
+  <!-- Embed pdf-lib locally -->
+  <script src="pdf-lib.min.js"></script>
+
+  <script>
+    window.ready = false;
+    window.imageStore = []; // store uploaded images
+
+    // Add one image at a time
+    window.addImage = function(base64) {
+      window.imageStore.push(base64);
+      return window.imageStore.length;
+    };
+
+    // Convert all stored images to one PDF
+    window.convertStoredImagesToPDF = async function() {
+      const { PDFDocument } = PDFLib;
+      const pdfDoc = await PDFDocument.create();
+
+      for (const b64 of window.imageStore) {
+        const imgBytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+        let img;
+        try { img = await pdfDoc.embedJpg(imgBytes); }
+        catch { img = await pdfDoc.embedPng(imgBytes); }
+
+        const page = pdfDoc.addPage([img.width, img.height]);
+        page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+      }
+
+      const pdfBytes = await pdfDoc.save();
+      return btoa(String.fromCharCode(...pdfBytes));
+    };
+
+    window.addEventListener("load", () => { window.ready = true; });
+  </script>
+</head>
+<body>
+  <h3>Image to PDF Converter Ready</h3>
+</body>
+</html>
