@@ -1,45 +1,205 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>Base64 Image to PDF</title>
+Option Explicit
 
-  <!-- Embed pdf-lib locally -->
-  <script src="pdf-lib.min.js"></script>
+' === GDI+ Declarations ===
+Private Declare PtrSafe Function GdiplusStartup Lib "gdiplus" (token As LongPtr, inputbuf As Any, Optional ByVal outputbuf As LongPtr = 0) As Long
+Private Declare PtrSafe Sub GdiplusShutdown Lib "gdiplus" (ByVal token As LongPtr)
+Private Declare PtrSafe Function GdipCreateBitmapFromFile Lib "gdiplus" (ByVal filename As LongPtr, ByRef bitmap As LongPtr) As Long
+Private Declare PtrSafe Function GdipDisposeImage Lib "gdiplus" (ByVal image As LongPtr) As Long
+Private Declare PtrSafe Function GdipSaveImageToFile Lib "gdiplus" (ByVal image As LongPtr, ByVal filename As LongPtr, ByRef clsidEncoder As Any, ByRef encoderParams As Any) As Long
+Private Declare PtrSafe Function GdipSaveAdd Lib "gdiplus" (ByVal image As LongPtr, ByRef encoderParams As Any) As Long
+Private Declare PtrSafe Function GdipSaveAddImage Lib "gdiplus" (ByVal image As LongPtr, ByVal newImage As LongPtr, ByRef encoderParams As Any) As Long
+Private Declare PtrSafe Function CLSIDFromString Lib "ole32" (ByVal str As LongPtr, ByRef id As Any) As Long
 
-  <script>
-    window.ready = false;
-    window.imageStore = []; // store uploaded images
+' Unicode API for file operations
+Private Declare PtrSafe Function lstrlenW Lib "kernel32" (ByVal lpString As LongPtr) As Long
+Private Declare PtrSafe Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpWideCharStr As LongPtr, ByVal cchWideChar As Long, ByVal lpMultiByteStr As LongPtr, ByVal cchMultiByte As Long, ByVal lpDefaultChar As LongPtr, ByVal lpUsedDefaultChar As LongPtr) As Long
 
-    // Add one image at a time
-    window.addImage = function(base64) {
-      window.imageStore.push(base64);
-      return window.imageStore.length;
-    };
+Private Type GUID
+    Data1 As Long
+    Data2 As Integer
+    Data3 As Integer
+    Data4(7) As Byte
+End Type
 
-    // Convert all stored images to one PDF
-    window.convertStoredImagesToPDF = async function() {
-      const { PDFDocument } = PDFLib;
-      const pdfDoc = await PDFDocument.create();
+Private Type EncoderParameter
+    Guid As GUID
+    NumberOfValues As Long
+    Type As Long
+    Value As LongPtr
+End Type
 
-      for (const b64 of window.imageStore) {
-        const imgBytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-        let img;
-        try { img = await pdfDoc.embedJpg(imgBytes); }
-        catch { img = await pdfDoc.embedPng(imgBytes); }
+Private Type EncoderParameters
+    Count As Long
+    Parameter As EncoderParameter
+End Type
 
-        const page = pdfDoc.addPage([img.width, img.height]);
-        page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
-      }
+Private Type GdiplusStartupInput
+    GdiplusVersion As Long
+    DebugEventCallback As LongPtr
+    SuppressBackgroundThread As Long
+    SuppressExternalCodecs As Long
+End Type
 
-      const pdfBytes = await pdfDoc.save();
-      return btoa(String.fromCharCode(...pdfBytes));
-    };
+' Constants
+Private EncoderSaveFlag As GUID
+Private EncoderCompression As GUID
+Private EncoderValueMultiFrame As Long
+Private EncoderValueFrameDimensionPage As Long
+Private EncoderValueFlush As Long
+Private EncoderValueCompressionLZW As Long
 
-    window.addEventListener("load", () => { window.ready = true; });
-  </script>
-</head>
-<body>
-  <h3>Image to PDF Converter Ready</h3>
-</body>
-</html>
+Private Sub InitializeConstants()
+    ' Initialize encoder GUIDs
+    CLSIDFromString StrPtr("{292266FC-AC40-47BF-8CFC-A85B89A655DE}"), EncoderSaveFlag
+    CLSIDFromString StrPtr("{E09D739D-CCD4-44EE-8EBA-3FBF8BE4FC58}"), EncoderCompression
+    
+    ' Initialize encoder values
+    EncoderValueMultiFrame = 18
+    EncoderValueFrameDimensionPage = 23
+    EncoderValueFlush = 20
+    EncoderValueCompressionLZW = 5
+End Sub
+
+Sub ConvertImagesToOneTIFF()
+    Dim folderPath As String
+    Dim fso As Object, folder As Object, file As Object
+    Dim gdipToken As LongPtr
+    Dim startupInput As GdiplusStartupInput
+    Dim tiffCLSID As GUID
+    Dim mainImage As LongPtr, newImage As LongPtr
+    Dim encoderParams As EncoderParameters
+    Dim ret As Long
+    Dim isFirst As Boolean
+    Dim outputPath As String
+    Dim fileCollection As Collection
+    Dim fileName As String
+    
+    ' Initialize constants
+    InitializeConstants
+    CLSIDFromString StrPtr("{557CF405-1A04-11D3-9A73-0000F81EF32E}"), tiffCLSID
+    
+    ' === Setup Paths ===
+    folderPath = "C:\Users\phantom\Desktop\20220529\"  ' Change to your folder
+    If Right(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
+    outputPath = folderPath & "output.tiff"
+    
+    ' Check if folder exists
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    If Not fso.FolderExists(folderPath) Then
+        MsgBox "Folder not found: " & folderPath
+        Exit Sub
+    End If
+    
+    ' === Start GDI+ ===
+    startupInput.GdiplusVersion = 1
+    If GdiplusStartup(gdipToken, startupInput) <> 0 Then
+        MsgBox "Failed to initialize GDI+"
+        Exit Sub
+    End If
+    
+    ' Collect image files
+    Set fileCollection = New Collection
+    Set folder = fso.GetFolder(folderPath)
+    
+    For Each file In folder.files
+        fileName = LCase(file.Name)
+        If fileName Like "*.jpg" Or fileName Like "*.jpeg" Or _
+           fileName Like "*.png" Or fileName Like "*.bmp" Or _
+           fileName Like "*.tif" Or fileName Like "*.tiff" Then
+            fileCollection.Add file.Path
+        End If
+    Next file
+    
+    If fileCollection.Count = 0 Then
+        MsgBox "No image files found in folder"
+        GdiplusShutdown gdipToken
+        Exit Sub
+    End If
+    
+    isFirst = True
+    mainImage = 0
+    newImage = 0
+    
+    On Error GoTo ErrorHandler
+    
+    ' === Process each image ===
+    Dim i As Long
+    For i = 1 To fileCollection.Count
+        ret = GdipCreateBitmapFromFile(StrPtr(fileCollection(i)), newImage)
+        
+        If ret <> 0 Or newImage = 0 Then
+            Debug.Print "Failed to load image: " & fileCollection(i)
+            GoTo NextImage
+        End If
+        
+        If isFirst Then
+            ' First image - create multi-frame TIFF
+            With encoderParams
+                .Count = 2
+                
+                ' Set save flag
+                .Parameter.Guid = EncoderSaveFlag
+                .Parameter.NumberOfValues = 1
+                .Parameter.Type = 4 ' ULONG
+                .Parameter.Value = VarPtr(EncoderValueMultiFrame)
+            End With
+            
+            ret = GdipSaveImageToFile(newImage, StrPtr(outputPath), tiffCLSID, encoderParams)
+            
+            If ret <> 0 Then
+                Debug.Print "Failed to create TIFF file"
+                GdipDisposeImage newImage
+                GoTo Cleanup
+            End If
+            
+            mainImage = newImage
+            isFirst = False
+        Else
+            ' Subsequent images - add as frames
+            With encoderParams
+                .Count = 1
+                .Parameter.Guid = EncoderSaveFlag
+                .Parameter.NumberOfValues = 1
+                .Parameter.Type = 4 ' ULONG
+                .Parameter.Value = VarPtr(EncoderValueFrameDimensionPage)
+            End With
+            
+            ret = GdipSaveAddImage(mainImage, newImage, encoderParams)
+            GdipDisposeImage newImage
+        End If
+        
+NextImage:
+        newImage = 0
+    Next i
+    
+    ' Finalize the TIFF
+    If mainImage <> 0 Then
+        With encoderParams
+            .Count = 1
+            .Parameter.Guid = EncoderSaveFlag
+            .Parameter.NumberOfValues = 1
+            .Parameter.Type = 4 ' ULONG
+            .Parameter.Value = VarPtr(EncoderValueFlush)
+        End With
+        
+        ret = GdipSaveAdd(mainImage, encoderParams)
+    End If
+    
+Cleanup:
+    ' Clean up resources
+    If mainImage <> 0 Then GdipDisposeImage mainImage
+    If newImage <> 0 Then GdipDisposeImage newImage
+    GdiplusShutdown gdipToken
+    
+    If i > 1 Then
+        MsgBox "Conversion completed! TIFF saved at: " & vbCrLf & outputPath & vbCrLf & "Processed " & (i - 1) & " images."
+    Else
+        MsgBox "No images were successfully processed."
+    End If
+    
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error occurred: " & Err.Description
+    GoTo Cleanup
+End Sub
