@@ -1,38 +1,176 @@
-# 加载必要的 .NET 库
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+#include <windows.h>
+#include <wrl.h>
+#include <atomic>
+#include <thread>
+#include <string>
+#include <WebView2.h>
+#include <WebView2EnvironmentOptions.h>
 
-# 捕获整个屏幕（支持多显示器）
-$screenBounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
-$bitmap = New-Object System.Drawing.Bitmap $screenBounds.Width, $screenBounds.Height
-$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$graphics.CopyFromScreen($screenBounds.Location, [System.Drawing.Point]::Empty, $screenBounds.Size)
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
 
-# 保存为临时文件
-$tempFile = [System.IO.Path]::GetTempFileName() + ".png"
-$bitmap.Save($tempFile, [System.Drawing.Imaging.ImageFormat]::Png)
-$graphics.Dispose()
-$bitmap.Dispose()
-Write-Host "截图已保存到: $tempFile"
+using namespace Microsoft::WRL;
 
+// 全局变量
+static std::atomic<bool> g_webViewInitialized = false;
+static HWND g_hwnd = nullptr;
+static ComPtr<ICoreWebView2Controller> g_webViewController;
+static ComPtr<ICoreWebView2> g_webView;
 
+// 窗口类名
+const wchar_t* WINDOW_CLASS_NAME = L"WebView2HiddenWindow";
+const wchar_t* WINDOW_TITLE = L"WebView2 Background Window";
 
-# 创建 Outlook 对象
-$outlook = New-Object -ComObject Outlook.Application
-$mail = $outlook.CreateItem(0)  # 0 表示邮件项
+// 前向声明
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+void RunMessagePump();
 
-# 配置邮件内容
-$mail.To = "recipient@example.com"  # 替换为实际邮箱
-$mail.Subject = "自动发送的屏幕截图 - $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
-$mail.Body = "系统自动捕获的屏幕截图，请查收附件。"
+// 创建隐藏窗口的函数
+HWND CreateHiddenWindow() {
+    HINSTANCE hInstance = GetModuleHandle(nullptr);
+    
+    // 注册窗口类
+    WNDCLASSEX wc = {};
+    wc.cbSize = sizeof(WNDCLASSEX);
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInstance;
+    wc.lpszClassName = WINDOW_CLASS_NAME;
+    
+    RegisterClassEx(&wc);
+    
+    // 创建窗口（隐藏状态）
+    HWND hwnd = CreateWindowEx(
+        0,
+        WINDOW_CLASS_NAME,
+        WINDOW_TITLE,
+        WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        800, 600,
+        nullptr, nullptr, hInstance, nullptr
+    );
+    
+    if (hwnd) {
+        // 隐藏窗口
+        ShowWindow(hwnd, SW_HIDE);
+        UpdateWindow(hwnd);
+    }
+    
+    return hwnd;
+}
 
-# 添加截图附件
-$mail.Attachments.Add($tempFile) | Out-Null
+// 窗口过程
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            return 0;
+        default:
+            return DefWindowProc(hwnd, msg, wParam, lParam);
+    }
+}
 
-# 发送邮件（后台静默发送）
-$mail.Send()
-Write-Host "邮件已发送！"
+// WebView2环境创建回调
+HRESULT OnEnvironmentCreated(HRESULT result, ICoreWebView2Environment* environment) {
+    if (!SUCCEEDED(result) || !environment) {
+        g_webViewInitialized = false;
+        return result;
+    }
+    
+    // 创建WebView2控制器
+    environment->CreateCoreWebView2Controller(g_hwnd, 
+        Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+            [](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
+                if (!SUCCEEDED(result) || !controller) {
+                    g_webViewInitialized = false;
+                    return result;
+                }
+                
+                g_webViewController = controller;
+                g_webViewController->get_CoreWebView2(&g_webView);
+                
+                // 调整WebView2大小以匹配窗口
+                RECT bounds;
+                GetClientRect(g_hwnd, &bounds);
+                g_webViewController->put_Bounds(bounds);
+                
+                g_webViewInitialized = true;
+                
+                // 可以在这里导航到初始页面
+                g_webView->Navigate(L"https://www.example.com");
+                
+                return S_OK;
+            }).Get());
+    
+    return S_OK;
+}
 
-# 清理临时文件
-Start-Sleep -Seconds 2  # 确保附件已附加
-Remove-Item $tempFile -Force
+// 消息泵循环
+void RunMessagePump() {
+    // 初始化COM（STA模式）
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    
+    // 创建窗口
+    g_hwnd = CreateHiddenWindow();
+    if (!g_hwnd) {
+        CoUninitialize();
+        return;
+    }
+    
+    // 创建WebView2环境
+    auto options = Microsoft::WRL::Make<CoreWebView2EnvironmentOptions>();
+    
+    CreateCoreWebView2EnvironmentWithOptions(
+        nullptr,  // 使用默认浏览器版本
+        nullptr,  // 使用默认用户数据文件夹
+        options.Get(),
+        Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+            OnEnvironmentCreated).Get());
+    
+    // 消息循环
+    MSG msg;
+    while (GetMessage(&msg, nullptr, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    
+    // 清理
+    if (g_webViewController) {
+        g_webViewController->Close();
+        g_webViewController = nullptr;
+        g_webView = nullptr;
+    }
+    
+    if (g_hwnd) {
+        DestroyWindow(g_hwnd);
+        g_hwnd = nullptr;
+    }
+    
+    CoUninitialize();
+}
+
+// 供VBA调用的导出函数
+extern "C" __declspec(dllexport) void __stdcall StartWebView2Thread() {
+    // 在新线程中启动消息泵
+    std::thread webViewThread([]() {
+        RunMessagePump();
+    });
+    
+    webViewThread.detach();
+}
+
+extern "C" __declspec(dllexport) bool __stdcall IsWebView2Initialized() {
+    return g_webViewInitialized.load();
+}
+
+extern "C" __declspec(dllexport) void __stdcall NavigateToUrl(const wchar_t* url) {
+    if (g_webView && g_webViewInitialized) {
+        g_webView->Navigate(url);
+    }
+}
+
+extern "C" __declspec(dllexport) void __stdcall ExecuteScript(const wchar_t* script) {
+    if (g_webView && g_webViewInitialized) {
+        g_webView->ExecuteScript(script, nullptr);
+    }
+}
