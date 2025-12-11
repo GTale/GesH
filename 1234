@@ -48,62 +48,87 @@ function getDirectText(element) {
 }
 
 /**
- * 深度遍历DOM，生成目录结构
- * 返回格式: [{text: string, children: array, element: HTMLElement, depth: number}]
+ * 深度遍历DOM，生成树形结构
  */
-function traverseDOM(root, depth = 0) {
-  const result = [];
-  
+function buildDOMTree(root, depth = 0) {
   if (shouldExcludeElement(root)) {
-    return result;
+    return null;
   }
   
-  // 获取当前节点的直接文本
-  const nodeText = getDirectText(root);
-  
-  // 获取所有可见的子元素
-  const childElements = [];
-  for (let i = 0; i < root.children.length; i++) {
-    const child = root.children[i];
-    childElements.push(...traverseDOM(child, depth + 1));
-  }
-  
-  // 构建当前节点
-  const currentNode = {
-    text: nodeText,
-    children: childElements,
-    element: root,
+  // 处理当前节点
+  const node = {
+    text: getDirectText(root),
+    children: [],
     depth: depth,
-    isLeaf: childElements.length === 0
+    element: root
   };
   
-  result.push(currentNode);
-  return result;
+  // 处理子节点
+  for (let i = 0; i < root.children.length; i++) {
+    const child = root.children[i];
+    const childNode = buildDOMTree(child, depth + 1);
+    if (childNode) {
+      node.children.push(childNode);
+    }
+  }
+  
+  return node;
 }
 
 /**
- * 压缩空节点 - 删除*节点，提升其子节点
+ * 压缩树 - 删除空的中间节点（*），提升其子节点
  */
-function compressEmptyNodes(nodes) {
+function compressTree(node) {
+  if (!node) return null;
+  
+  // 先递归压缩子节点
+  const compressedChildren = [];
+  for (const child of node.children) {
+    const compressedChild = compressTree(child);
+    if (compressedChild) {
+      compressedChildren.push(compressedChild);
+    }
+  }
+  
+  // 如果当前节点是空节点（*），且不是叶子节点
+  if (node.text === '*' && compressedChildren.length > 0) {
+    // 直接返回压缩后的子节点数组（不包装在当前节点中）
+    // 注意：这里返回的是一个数组，需要在父节点中展开
+    return {
+      _type: 'compressedNodeArray',
+      children: compressedChildren
+    };
+  }
+  
+  // 否则，保持节点结构，但更新子节点
+  return {
+    text: node.text,
+    children: compressedChildren,
+    depth: node.depth,
+    element: node.element
+  };
+}
+
+/**
+ * 处理压缩树的结果，将压缩节点数组展开
+ */
+function processCompressedTree(nodes) {
   const result = [];
   
   for (const node of nodes) {
-    // 如果是空节点（*），且不是叶子节点
-    if (node.text === '*' && node.children.length > 0) {
-      // 将子节点提升到当前层级（保持深度不变，但移除父节点）
-      const compressedChildren = compressEmptyNodes(node.children);
-      
-      // 将压缩后的子节点直接添加到结果中
-      for (const child of compressedChildren) {
-        result.push(child);
-      }
-    } else {
-      // 保持节点，但递归压缩其子节点
-      const newNode = {
-        ...node,
-        children: compressEmptyNodes(node.children)
-      };
-      result.push(newNode);
+    if (node && node._type === 'compressedNodeArray') {
+      // 展开压缩的节点数组
+      const expandedNodes = processCompressedTree(node.children);
+      result.push(...expandedNodes);
+    } else if (node) {
+      // 处理当前节点的子节点
+      const processedChildren = processCompressedTree(node.children);
+      result.push({
+        text: node.text,
+        children: processedChildren,
+        depth: node.depth,
+        element: node.element
+      });
     }
   }
   
@@ -111,43 +136,75 @@ function compressEmptyNodes(nodes) {
 }
 
 /**
- * 判断节点是否为叶子节点（在压缩后）
+ * 判断节点是否为叶子节点
  */
 function isLeafNode(node) {
   return node.children.length === 0;
 }
 
 /**
- * 生成最终的目录字符串
+ * 判断节点是否为空节点
  */
-function generateDirectoryLines(nodes, depth = 0, parentIsEmpty = false) {
+function isEmptyNode(node) {
+  return node.text === '*';
+}
+
+/**
+ * 计算节点的有效深度（考虑压缩后的深度）
+ */
+function calculateEffectiveDepth(node, baseDepth = 0) {
+  if (!node) return baseDepth;
+  
+  // 如果节点是空的，返回其子节点的深度（如果有的话）
+  if (isEmptyNode(node) && node.children.length > 0) {
+    let minDepth = Infinity;
+    for (const child of node.children) {
+      const childDepth = calculateEffectiveDepth(child, baseDepth);
+      if (childDepth < minDepth) minDepth = childDepth;
+    }
+    return minDepth > 0 ? minDepth - 1 : baseDepth;
+  }
+  
+  return baseDepth;
+}
+
+/**
+ * 生成目录行
+ */
+function generateDirectoryLines(nodes, depth = 0, isCompressedLevel = false) {
   const lines = [];
   const indent = '  '.repeat(depth);
   
-  // 如果父节点是空的，我们当前处理的节点已经是提升后的
-  // 这种情况下，我们不需要将兄弟节点连接
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
-    const nextNode = nodes[i + 1];
     
+    // 跳过空节点（它们应该已经被压缩了，但这里作为安全检查）
+    if (isEmptyNode(node) && node.children.length === 0) {
+      continue;
+    }
+    
+    // 如果是叶子节点，直接输出
     if (isLeafNode(node)) {
-      // 叶子节点，直接输出
       lines.push(`${indent}${node.text}`);
     } else {
-      // 非叶子节点
-      // 检查所有直接子节点是否都是叶子节点
+      // 检查是否所有直接子节点都是叶子节点
       const allChildrenAreLeaves = node.children.every(child => isLeafNode(child));
       
-      if (allChildrenAreLeaves) {
-        // 所有子节点都是叶子节点，用-连接它们
+      // 如果是压缩层级，不再连接叶子节点
+      if (isCompressedLevel) {
+        lines.push(`${indent}${node.text}`);
+        // 递归处理子节点，标记下一层也是压缩层级
+        lines.push(...generateDirectoryLines(node.children, depth + 1, true));
+      } else if (allChildrenAreLeaves) {
+        // 所有子节点都是叶子节点，用-连接
         const childTexts = node.children.map(child => child.text);
         const combinedText = childTexts.join('-');
         lines.push(`${indent}${node.text}`);
         lines.push(`${indent}  ${combinedText}`);
       } else {
-        // 有嵌套的子节点，递归处理
+        // 有嵌套子节点，递归处理
         lines.push(`${indent}${node.text}`);
-        lines.push(...generateDirectoryLines(node.children, depth + 1));
+        lines.push(...generateDirectoryLines(node.children, depth + 1, false));
       }
     }
   }
@@ -163,19 +220,44 @@ function printDOMDirectory() {
   console.log('============');
   
   try {
-    // 从body开始遍历，或者你可以指定其他根节点
+    // 从body开始遍历
     const rootElement = document.body;
     
-    // 第一步：遍历DOM树
-    const domTree = traverseDOM(rootElement);
+    // 第一步：构建DOM树
+    const domTree = buildDOMTree(rootElement);
     
-    // 第二步：压缩空节点（删除*节点）
-    const compressedTree = compressEmptyNodes(domTree);
+    // 第二步：压缩树（删除空节点）
+    const compressedRoot = compressTree(domTree);
     
-    // 第三步：生成目录行
-    const directoryLines = generateDirectoryLines(compressedTree);
+    // 第三步：处理压缩结果
+    let processedTree;
+    if (compressedRoot && compressedRoot._type === 'compressedNodeArray') {
+      processedTree = processCompressedTree(compressedRoot.children);
+    } else if (compressedRoot) {
+      processedTree = [compressedRoot];
+    } else {
+      processedTree = [];
+    }
     
-    // 第四步：打印
+    // 第四步：检查是否有空节点被提升到根级别
+    // 如果有，标记第一层为压缩层级
+    const hasCompressedRoot = processedTree.some(node => {
+      if (node) {
+        // 检查节点是否由压缩而来（深度不匹配原始DOM深度）
+        const originalDepth = calculateEffectiveDepth(node);
+        return originalDepth !== node.depth;
+      }
+      return false;
+    });
+    
+    // 第五步：生成目录行
+    const directoryLines = generateDirectoryLines(
+      processedTree, 
+      0, 
+      hasCompressedRoot
+    );
+    
+    // 第六步：打印
     directoryLines.forEach(line => console.log(line));
     
     console.log('============');
@@ -185,18 +267,108 @@ function printDOMDirectory() {
   }
 }
 
-// 辅助函数：可视化DOM结构（调试用）
-function visualizeDOMTree(nodes, depth = 0) {
-  const indent = '  '.repeat(depth);
-  for (const node of nodes) {
-    console.log(`${indent}${node.text} (depth: ${node.depth}, children: ${node.children.length})`);
-    visualizeDOMTree(node.children, depth + 1);
+// 简单版本的实现
+function printDOMDirectorySimple() {
+  console.log('DOM目录结构:');
+  console.log('============');
+  
+  try {
+    const rootElement = document.body;
+    const directoryLines = [];
+    
+    function traverse(element, depth = 0, isFromCompression = false) {
+      if (!element || element.nodeType !== 1) return;
+      
+      // 检查可见性
+      const style = window.getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden') return;
+      
+      // 排除特定标签
+      const excludeTags = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'LINK', 'META', 'BR', 'HR'];
+      if (excludeTags.includes(element.tagName)) return;
+      
+      // 获取直接文本
+      let directText = '';
+      for (const node of element.childNodes) {
+        if (node.nodeType === 3) {
+          const trimmed = node.textContent.trim();
+          if (trimmed) {
+            directText += (directText ? ' ' : '') + trimmed;
+          }
+        }
+      }
+      const nodeText = directText || '*';
+      
+      // 获取可见的子元素
+      const childElements = Array.from(element.children).filter(child => {
+        if (child.nodeType !== 1) return false;
+        const childStyle = window.getComputedStyle(child);
+        return childStyle.display !== 'none' && childStyle.visibility !== 'hidden';
+      });
+      
+      const indent = '  '.repeat(depth);
+      
+      // 如果是空节点并且有子节点，递归处理子节点，不输出当前节点
+      if (nodeText === '*' && childElements.length > 0) {
+        childElements.forEach(child => traverse(child, depth, true));
+        return;
+      }
+      
+      // 如果节点不是空的，或者没有子节点
+      if (nodeText !== '*' || childElements.length === 0) {
+        directoryLines.push(`${indent}${nodeText}`);
+      }
+      
+      // 处理子节点
+      if (childElements.length > 0) {
+        // 检查是否所有子节点都是叶子节点
+        const allChildrenAreLeaves = childElements.every(child => {
+          const grandchildren = Array.from(child.children || []).filter(gc => {
+            if (gc.nodeType !== 1) return false;
+            const gcStyle = window.getComputedStyle(gc);
+            return gcStyle.display !== 'none' && gcStyle.visibility !== 'hidden';
+          });
+          return grandchildren.length === 0;
+        });
+        
+        if (allChildrenAreLeaves && !isFromCompression) {
+          // 所有子节点都是叶子节点且不是来自压缩，用-连接
+          const leafTexts = childElements.map(child => {
+            let childText = '';
+            for (const node of child.childNodes) {
+              if (node.nodeType === 3) {
+                const trimmed = node.textContent.trim();
+                if (trimmed) {
+                  childText += (childText ? ' ' : '') + trimmed;
+                }
+              }
+            }
+            return childText || '*';
+          });
+          const combinedText = leafTexts.join('-');
+          directoryLines.push(`${indent}  ${combinedText}`);
+        } else {
+          // 有嵌套子节点，递归处理
+          childElements.forEach(child => traverse(child, depth + 1, false));
+        }
+      }
+    }
+    
+    traverse(rootElement);
+    
+    // 打印结果
+    directoryLines.forEach(line => console.log(line));
+    
+    console.log('============');
+    console.log('目录生成完成');
+  } catch (error) {
+    console.error('生成目录时出错:', error);
   }
 }
 
 // 页面加载完成后自动生成目录
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', printDOMDirectory);
+  document.addEventListener('DOMContentLoaded', printDOMDirectorySimple);
 } else {
-  printDOMDirectory();
+  printDOMDirectorySimple();
 }
