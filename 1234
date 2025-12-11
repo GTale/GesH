@@ -1,482 +1,108 @@
-function domToTextTree(root = document.body, options = {}) {
-  const defaultOptions = {
-    // 跳过隐藏元素
-    skipHidden: true,
-    // 合并相邻文本节点
-    mergeText: true,
-    // 最小文本长度（过滤空白节点）
-    minLength: 1,
-    ...options
-  };
+/**
+ * 判断元素是否可见
+ */
+function isVisible(element) {
+  if (!element || element.nodeType !== 1) return false;
   
-  // 检查元素是否可见
-  function isVisible(element) {
-    if (!defaultOptions.skipHidden) return true;
-    
-    const style = window.getComputedStyle(element);
-    return style.display !== 'none' && 
-           style.visibility !== 'hidden' &&
-           parseFloat(style.opacity) > 0 &&
-           !element.hidden;
-  }
-  
-  // 检查是否应该跳过此元素
-  function shouldSkip(element) {
-    if (!isVisible(element)) return true;
-    
-    const skipTags = ['SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'SVG', 'CANVAS'];
-    return skipTags.includes(element.tagName);
-  }
-  
-  // 提取元素文本内容
-  function extractElementText(element) {
-    const tag = element.tagName.toLowerCase();
-    
-    // 处理表单元素
-    if (tag === 'input') {
-      const type = element.type.toLowerCase();
-      
-      if (type === 'checkbox' || type === 'radio') {
-        return element.checked ? 'true' : 'false';
-      }
-      
-      if (type === 'submit' || type === 'button') {
-        return element.value || element.getAttribute('value') || '';
-      }
-      
-      // text, password, email, number 等
-      return element.value || '';
-    }
-    
-    if (tag === 'textarea') {
-      return element.value || '';
-    }
-    
-    if (tag === 'select') {
-      const selected = element.options[element.selectedIndex];
-      return selected ? selected.text : '';
-    }
-    
-    // 图片替代文本
-    if (tag === 'img') {
-      return element.alt || element.title || '';
-    }
-    
-    // 链接标题
-    if (tag === 'a') {
-      const title = element.title || element.textContent.trim();
-      if (title && title !== element.textContent.trim()) {
-        return title;
-      }
-    }
-    
-    // 默认返回空，让子节点处理
-    return null;
-  }
-  
-  // 递归遍历DOM
-  function traverse(node) {
-    // 跳过注释、处理指令等
-    if (node.nodeType === Node.COMMENT_NODE || 
-        node.nodeType === Node.PROCESSING_INSTRUCTION_NODE) {
-      return null;
-    }
-    
-    // 文本节点
-    if (node.nodeType === Node.TEXT_NODE) {
-      const text = node.textContent.trim();
-      return text.length >= defaultOptions.minLength ? { text } : null;
-    }
-    
-    // 元素节点
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      // 跳过不需要的元素
-      if (shouldSkip(node)) {
-        return null;
-      }
-      
-      const tag = node.tagName.toLowerCase();
-      
-      // 提取元素自身的文本
-      const elementText = extractElementText(node);
-      
-      // 处理子节点
-      const children = [];
-      for (const child of node.childNodes) {
-        const childResult = traverse(child);
-        if (childResult) {
-          children.push(childResult);
-        }
-      }
-      
-      // 如果是自闭合标签或无内容标签，检查是否有自身文本
-      const voidTags = ['img', 'br', 'hr', 'input', 'meta', 'link', 'area', 'base', 'col', 'embed', 'param', 'source', 'track', 'wbr'];
-      
-      if (voidTags.includes(tag) || !children.length) {
-        // 如果有自身文本，返回文本节点
-        if (elementText && elementText.length >= defaultOptions.minLength) {
-          return { text: elementText, tag };
-        }
-        return null;
-      }
-      
-      // 合并相邻文本节点
-      if (defaultOptions.mergeText && children.length > 0) {
-        const mergedChildren = [];
-        let currentText = null;
-        
-        for (const child of children) {
-          if (child.text !== undefined && !child.children) {
-            // 这是一个文本节点
-            if (!currentText) {
-              currentText = child;
-            } else {
-              // 合并到当前文本
-              if (!currentText.text) currentText.text = '';
-              if (!child.text) child.text = '';
-              currentText.text += (currentText.text && child.text ? ' ' : '') + child.text;
-            }
-          } else {
-            // 这是一个元素节点
-            if (currentText) {
-              mergedChildren.push(currentText);
-              currentText = null;
-            }
-            mergedChildren.push(child);
-          }
-        }
-        
-        if (currentText) {
-          mergedChildren.push(currentText);
-        }
-        
-        // 替换children
-        children.length = 0;
-        children.push(...mergedChildren);
-      }
-      
-      // 优化：如果元素只有一个文本子节点，且元素自身没有重要属性，直接返回文本
-      if (children.length === 1 && children[0].text !== undefined && !children[0].children) {
-        // 如果有自身文本，合并
-        if (elementText && elementText.length >= defaultOptions.minLength) {
-          if (children[0].text) {
-            children[0].text = elementText + ': ' + children[0].text;
-          } else {
-            children[0].text = elementText;
-          }
-        }
-        return children[0];
-      }
-      
-      // 创建节点
-      const result = { tag, children };
-      
-      // 添加自身文本作为第一个子节点（如果有）
-      if (elementText && elementText.length >= defaultOptions.minLength) {
-        result.children.unshift({ text: elementText });
-      }
-      
-      // 优化：如果节点没有文本内容，返回子节点（提升一级）
-      if (!result.children || result.children.length === 0) {
-        return null;
-      }
-      
-      // 进一步优化：如果只有子节点，但没有自身文本，考虑是否需要提升
-      if (!elementText && result.children.length === 1) {
-        return result.children[0];
-      }
-      
-      return result;
-    }
-    
-    return null;
-  }
-  
-  // 优化树结构：合并无意义的父节点
-  function optimizeTree(node) {
-    if (!node || node.text !== undefined) {
-      return node;
-    }
-    
-    // 处理子节点
-    if (node.children) {
-      node.children = node.children
-        .map(child => optimizeTree(child))
-        .filter(child => child !== null);
-    }
-    
-    // 如果节点没有子节点，返回null
-    if (!node.children || node.children.length === 0) {
-      return null;
-    }
-    
-    // 如果节点只有一个子节点，且自身没有重要信息，返回子节点
-    if (node.children.length === 1 && 
-        !node.text && 
-        !['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'td', 'th', 'option'].includes(node.tag)) {
-      return node.children[0];
-    }
-    
-    // 如果所有子节点都是文本，合并它们
-    if (node.children.length > 1 && node.children.every(child => child.text !== undefined && !child.children)) {
-      const combinedText = node.children
-        .map(child => child.text)
-        .filter(text => text && text.length >= defaultOptions.minLength)
-        .join(' ');
-      
-      if (combinedText.length >= defaultOptions.minLength) {
-        return { text: combinedText, tag: node.tag };
-      }
-      return null;
-    }
-    
-    return node;
-  }
-  
-  // 执行遍历并优化
-  const tree = traverse(root);
-  return optimizeTree(tree);
+  const style = window.getComputedStyle(element);
+  return style.display !== 'none' && 
+         style.visibility !== 'hidden' && 
+         style.opacity !== '0' &&
+         element.offsetWidth > 0 &&
+         element.offsetHeight > 0;
 }
 
-// 简化的版本，只返回扁平化的文本数组（按顺序）
-function extractAllText(root = document.body) {
-  const texts = [];
+/**
+ * 获取元素的直接文本内容（不包括子元素文本）
+ */
+function getDirectText(element) {
+  let text = '';
   
-  function traverse(node) {
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      const style = window.getComputedStyle(node);
-      if (style.display === 'none' || style.visibility === 'hidden') {
-        return;
+  // 遍历所有子节点
+  for (const node of element.childNodes) {
+    if (node.nodeType === 3) { // 文本节点
+      const trimmed = node.textContent.trim();
+      if (trimmed) {
+        text += (text ? ' ' : '') + trimmed;
       }
-      
-      if (['SCRIPT', 'STYLE'].includes(node.tagName)) {
-        return;
-      }
-      
-      // 处理表单元素
-      const tag = node.tagName.toLowerCase();
-      if (tag === 'input') {
-        const type = node.type.toLowerCase();
-        if (type === 'checkbox' || type === 'radio') {
-          texts.push(node.checked ? 'true' : 'false');
-          return;
-        }
-        if (node.value) {
-          texts.push(node.value);
-          return;
-        }
-      }
-      
-      if (tag === 'textarea' && node.value) {
-        texts.push(node.value);
-        return;
-      }
-      
-      if (tag === 'img' && node.alt) {
-        texts.push(node.alt);
-        return;
-      }
-    }
-    
-    if (node.nodeType === Node.TEXT_NODE) {
-      const text = node.textContent.trim();
-      if (text) {
-        texts.push(text);
-      }
-      return;
-    }
-    
-    // 递归子节点
-    for (const child of node.childNodes) {
-      traverse(child);
     }
   }
   
-  traverse(root);
-  return texts;
+  return text || '*'; // 如果没有文本，返回 '*'
 }
 
-// 创建更紧凑的文本树（类似目录结构）
-function createCompactTextTree(root = document.body) {
+/**
+ * 深度遍历DOM，生成目录结构
+ */
+function generateDOMDirectory(root, depth = 0) {
   const result = [];
-  let currentSection = null;
-  let currentLevel = 0;
+  const indent = '  '.repeat(depth);
   
-  function addText(text, level = 0) {
-    if (!text || text.length < 1) return;
+  // 只处理元素节点，且必须是可见的
+  if (root.nodeType === 1 && isVisible(root)) {
+    // 获取当前节点的直接文本
+    const nodeText = getDirectText(root);
     
-    if (level > currentLevel) {
-      // 新的子级
-      if (currentSection && currentSection.children) {
-        currentSection.children.push({ text, children: [] });
-      }
-    } else if (level === currentLevel) {
-      // 同级
-      result.push({ text, children: [] });
-      currentSection = result[result.length - 1];
+    // 获取所有可见的子元素
+    const childElements = Array.from(root.children || [])
+      .filter(child => child.nodeType === 1 && isVisible(child));
+    
+    if (childElements.length === 0) {
+      // 叶子节点，直接添加文本
+      result.push(`${indent}${nodeText}`);
     } else {
-      // 回到上级
-      currentLevel = level;
-      result.push({ text, children: [] });
-      currentSection = result[result.length - 1];
+      // 检查所有子节点是否都是叶子节点
+      const allChildrenAreLeaves = childElements.every(child => {
+        const grandChildren = Array.from(child.children || [])
+          .filter(gc => gc.nodeType === 1 && isVisible(gc));
+        return grandChildren.length === 0;
+      });
+      
+      if (allChildrenAreLeaves) {
+        // 所有子节点都是叶子节点，用 - 连接它们的文本
+        const leafTexts = childElements.map(child => getDirectText(child));
+        const combinedText = leafTexts.join('-');
+        result.push(`${indent}${nodeText}`);
+        if (combinedText) {
+          result.push(`${indent}  ${combinedText}`);
+        }
+      } else {
+        // 有嵌套的子节点，递归处理
+        result.push(`${indent}${nodeText}`);
+        childElements.forEach(child => {
+          result.push(...generateDOMDirectory(child, depth + 1));
+        });
+      }
     }
-    
-    currentLevel = level;
   }
   
-  function traverse(node, level = 0) {
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      const style = window.getComputedStyle(node);
-      if (style.display === 'none' || style.visibility === 'hidden') {
-        return level;
-      }
-      
-      const tag = node.tagName.toLowerCase();
-      
-      // 标题标签增加层级
-      if (tag.match(/^h[1-6]$/)) {
-        const title = node.textContent.trim();
-        if (title) {
-          addText(title, parseInt(tag.charAt(1)));
-          return parseInt(tag.charAt(1));
-        }
-      }
-      
-      // 列表项
-      if (tag === 'li') {
-        const text = node.textContent.trim();
-        if (text) {
-          addText(`• ${text}`, level + 1);
-          return level + 1;
-        }
-      }
-      
-      // 段落
-      if (tag === 'p') {
-        const text = node.textContent.trim();
-        if (text) {
-          addText(text, level);
-          return level;
-        }
-      }
-      
-      // 处理表单元素
-      if (tag === 'input') {
-        const type = node.type.toLowerCase();
-        if (type === 'checkbox') {
-          addText(`[${node.checked ? '✓' : ' '}] ${node.name || ''}`, level);
-          return level;
-        }
-        if (type === 'radio') {
-          addText(`(${node.checked ? '•' : ' '}) ${node.name || ''}`, level);
-          return level;
-        }
-        if (node.value) {
-          addText(`${node.name || ''}: ${node.value}`, level);
-          return level;
-        }
-      }
-      
-      // 递归子节点
-      let maxChildLevel = level;
-      for (const child of node.childNodes) {
-        const childLevel = traverse(child, level);
-        maxChildLevel = Math.max(maxChildLevel, childLevel);
-      }
-      
-      return maxChildLevel;
-    }
-    
-    if (node.nodeType === Node.TEXT_NODE) {
-      const text = node.textContent.trim();
-      if (text && text.length > 20) { // 只添加较长的文本
-        addText(text, level);
-      }
-      return level;
-    }
-    
-    return level;
-  }
-  
-  traverse(root);
   return result;
 }
 
-// 使用示例
-const textTree = domToTextTree(document.body);
-console.log(JSON.stringify(textTree, null, 2));
-
-// 获取所有文本
-const allText = extractAllText(document.body);
-console.log('所有文本:', allText);
-
-// 紧凑格式
-const compactTree = createCompactTextTree(document.body);
-console.log(JSON.stringify(compactTree, null, 2));
-
-// 提取页面主要内容（基于启发式）
-function extractMainContent() {
-  // 尝试找到文章区域
-  const candidates = [
-    'article',
-    'main',
-    '.content',
-    '.post',
-    '.article',
-    '#content',
-    '#main'
-  ];
+/**
+ * 生成并打印目录结构
+ */
+function printDOMDirectory() {
+  console.log('DOM目录结构:');
+  console.log('============');
   
-  for (const selector of candidates) {
-    const element = document.querySelector(selector);
-    if (element) {
-      return domToTextTree(element);
-    }
+  try {
+    // 从body开始遍历，或者你可以指定其他根节点
+    const rootElement = document.body;
+    const directory = generateDOMDirectory(rootElement);
+    
+    directory.forEach(line => console.log(line));
+    
+    console.log('============');
+    console.log('目录生成完成');
+  } catch (error) {
+    console.error('生成目录时出错:', error);
   }
-  
-  // 如果没有找到，使用整个body
-  return domToTextTree(document.body);
 }
 
-// 生成可读的文本摘要
-function generateTextSummary(root = document.body, maxItems = 50) {
-  const tree = domToTextTree(root);
-  const items = [];
-  
-  function collectText(node, depth = 0) {
-    if (!node) return;
-    
-    if (node.text !== undefined) {
-      items.push({
-        text: node.text,
-        depth: depth,
-        length: node.text.length
-      });
-    }
-    
-    if (node.children) {
-      node.children.forEach(child => collectText(child, depth + 1));
-    }
-  }
-  
-  collectText(tree);
-  
-  // 按重要性排序（标题、长文本优先）
-  const importantItems = items
-    .filter(item => item.length > 10) // 过滤过短文本
-    .sort((a, b) => {
-      // 标题优先
-      const aIsTitle = a.text.length < 100 && (a.text.includes(':') || a.depth <= 2);
-      const bIsTitle = b.text.length < 100 && (b.text.includes(':') || b.depth <= 2);
-      
-      if (aIsTitle && !bIsTitle) return -1;
-      if (!aIsTitle && bIsTitle) return 1;
-      
-      // 长的文本优先
-      return b.length - a.length;
-    })
-    .slice(0, maxItems)
-    .map(item => '  '.repeat(item.depth) + item.text);
-  
-  return importantItems;
-}
+// 使用示例：
+// 可以直接调用 printDOMDirectory() 来生成目录
+// 或者绑定到某个事件上
+
+// 示例调用 - 可以直接在控制台运行
+// printDOMDirectory();
