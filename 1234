@@ -1,15 +1,31 @@
 /**
  * 判断元素是否可见
+ * 检查元素自身的可见性，不检查父元素
  */
-function isVisible(element) {
+function isElementVisible(element) {
   if (!element || element.nodeType !== 1) return false;
   
   const style = window.getComputedStyle(element);
   return style.display !== 'none' && 
          style.visibility !== 'hidden' && 
-         style.opacity !== '0' &&
-         element.offsetWidth > 0 &&
-         element.offsetHeight > 0;
+         style.opacity !== '0';
+}
+
+/**
+ * 检查元素是否应该被排除（隐藏的元素）
+ */
+function shouldExcludeElement(element) {
+  if (!element || element.nodeType !== 1) return true;
+  
+  // 排除特定标签
+  const excludeTags = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'LINK', 'META', 'BR', 'HR'];
+  if (excludeTags.includes(element.tagName)) return true;
+  
+  // 检查可见性
+  const style = window.getComputedStyle(element);
+  return style.display === 'none' || 
+         style.visibility === 'hidden' || 
+         style.opacity === '0';
 }
 
 /**
@@ -33,50 +49,110 @@ function getDirectText(element) {
 
 /**
  * 深度遍历DOM，生成目录结构
+ * 返回格式: [{text: string, children: array, element: HTMLElement, depth: number}]
  */
-function generateDOMDirectory(root, depth = 0) {
+function traverseDOM(root, depth = 0) {
   const result = [];
-  const indent = '  '.repeat(depth);
   
-  // 只处理元素节点，且必须是可见的
-  if (root.nodeType === 1 && isVisible(root)) {
-    // 获取当前节点的直接文本
-    const nodeText = getDirectText(root);
-    
-    // 获取所有可见的子元素
-    const childElements = Array.from(root.children || [])
-      .filter(child => child.nodeType === 1 && isVisible(child));
-    
-    if (childElements.length === 0) {
-      // 叶子节点，直接添加文本
-      result.push(`${indent}${nodeText}`);
-    } else {
-      // 检查所有子节点是否都是叶子节点
-      const allChildrenAreLeaves = childElements.every(child => {
-        const grandChildren = Array.from(child.children || [])
-          .filter(gc => gc.nodeType === 1 && isVisible(gc));
-        return grandChildren.length === 0;
-      });
+  if (shouldExcludeElement(root)) {
+    return result;
+  }
+  
+  // 获取当前节点的直接文本
+  const nodeText = getDirectText(root);
+  
+  // 获取所有可见的子元素
+  const childElements = [];
+  for (let i = 0; i < root.children.length; i++) {
+    const child = root.children[i];
+    childElements.push(...traverseDOM(child, depth + 1));
+  }
+  
+  // 构建当前节点
+  const currentNode = {
+    text: nodeText,
+    children: childElements,
+    element: root,
+    depth: depth,
+    isLeaf: childElements.length === 0
+  };
+  
+  result.push(currentNode);
+  return result;
+}
+
+/**
+ * 压缩空节点 - 删除*节点，提升其子节点
+ */
+function compressEmptyNodes(nodes) {
+  const result = [];
+  
+  for (const node of nodes) {
+    // 如果是空节点（*），且不是叶子节点
+    if (node.text === '*' && node.children.length > 0) {
+      // 将子节点提升到当前层级（保持深度不变，但移除父节点）
+      const compressedChildren = compressEmptyNodes(node.children);
       
-      if (allChildrenAreLeaves) {
-        // 所有子节点都是叶子节点，用 - 连接它们的文本
-        const leafTexts = childElements.map(child => getDirectText(child));
-        const combinedText = leafTexts.join('-');
-        result.push(`${indent}${nodeText}`);
-        if (combinedText) {
-          result.push(`${indent}  ${combinedText}`);
-        }
-      } else {
-        // 有嵌套的子节点，递归处理
-        result.push(`${indent}${nodeText}`);
-        childElements.forEach(child => {
-          result.push(...generateDOMDirectory(child, depth + 1));
-        });
+      // 将压缩后的子节点直接添加到结果中
+      for (const child of compressedChildren) {
+        result.push(child);
       }
+    } else {
+      // 保持节点，但递归压缩其子节点
+      const newNode = {
+        ...node,
+        children: compressEmptyNodes(node.children)
+      };
+      result.push(newNode);
     }
   }
   
   return result;
+}
+
+/**
+ * 判断节点是否为叶子节点（在压缩后）
+ */
+function isLeafNode(node) {
+  return node.children.length === 0;
+}
+
+/**
+ * 生成最终的目录字符串
+ */
+function generateDirectoryLines(nodes, depth = 0, parentIsEmpty = false) {
+  const lines = [];
+  const indent = '  '.repeat(depth);
+  
+  // 如果父节点是空的，我们当前处理的节点已经是提升后的
+  // 这种情况下，我们不需要将兄弟节点连接
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    const nextNode = nodes[i + 1];
+    
+    if (isLeafNode(node)) {
+      // 叶子节点，直接输出
+      lines.push(`${indent}${node.text}`);
+    } else {
+      // 非叶子节点
+      // 检查所有直接子节点是否都是叶子节点
+      const allChildrenAreLeaves = node.children.every(child => isLeafNode(child));
+      
+      if (allChildrenAreLeaves) {
+        // 所有子节点都是叶子节点，用-连接它们
+        const childTexts = node.children.map(child => child.text);
+        const combinedText = childTexts.join('-');
+        lines.push(`${indent}${node.text}`);
+        lines.push(`${indent}  ${combinedText}`);
+      } else {
+        // 有嵌套的子节点，递归处理
+        lines.push(`${indent}${node.text}`);
+        lines.push(...generateDirectoryLines(node.children, depth + 1));
+      }
+    }
+  }
+  
+  return lines;
 }
 
 /**
@@ -89,9 +165,18 @@ function printDOMDirectory() {
   try {
     // 从body开始遍历，或者你可以指定其他根节点
     const rootElement = document.body;
-    const directory = generateDOMDirectory(rootElement);
     
-    directory.forEach(line => console.log(line));
+    // 第一步：遍历DOM树
+    const domTree = traverseDOM(rootElement);
+    
+    // 第二步：压缩空节点（删除*节点）
+    const compressedTree = compressEmptyNodes(domTree);
+    
+    // 第三步：生成目录行
+    const directoryLines = generateDirectoryLines(compressedTree);
+    
+    // 第四步：打印
+    directoryLines.forEach(line => console.log(line));
     
     console.log('============');
     console.log('目录生成完成');
@@ -100,9 +185,18 @@ function printDOMDirectory() {
   }
 }
 
-// 使用示例：
-// 可以直接调用 printDOMDirectory() 来生成目录
-// 或者绑定到某个事件上
+// 辅助函数：可视化DOM结构（调试用）
+function visualizeDOMTree(nodes, depth = 0) {
+  const indent = '  '.repeat(depth);
+  for (const node of nodes) {
+    console.log(`${indent}${node.text} (depth: ${node.depth}, children: ${node.children.length})`);
+    visualizeDOMTree(node.children, depth + 1);
+  }
+}
 
-// 示例调用 - 可以直接在控制台运行
-// printDOMDirectory();
+// 页面加载完成后自动生成目录
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', printDOMDirectory);
+} else {
+  printDOMDirectory();
+}
